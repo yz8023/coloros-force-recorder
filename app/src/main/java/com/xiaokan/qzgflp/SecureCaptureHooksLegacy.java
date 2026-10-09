@@ -165,6 +165,56 @@ final class SecureCaptureHooksLegacy {
                 log("hook Oplus failed", t);
             }
         }
+
+        try {
+            hookWindowAttrSecureClear(cl);
+        } catch (Throwable t) {
+            log("hook WMS attr secure clear failed", t);
+        }
+
+        try {
+            hookRecentsSnapshot(cl);
+        } catch (Throwable t) {
+            if (!(t instanceof ClassNotFoundException)) {
+                log("hook recents snapshot failed", t);
+            }
+        }
+    }
+
+    private static void hookWindowAttrSecureClear(ClassLoader cl) throws ClassNotFoundException {
+        Class<?> wmsClazz = cl.loadClass("com.android.server.wm.WindowManagerService");
+        XC_MethodHook clearer = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                int uid = android.os.Binder.getCallingUid();
+                if (uid < 10000) {
+                    return;
+                }
+                for (Object arg : param.args) {
+                    if (arg instanceof android.view.WindowManager.LayoutParams) {
+                        android.view.WindowManager.LayoutParams lp =
+                                (android.view.WindowManager.LayoutParams) arg;
+                        if ((lp.flags & android.view.WindowManager.LayoutParams.FLAG_SECURE) != 0) {
+                            lp.flags &= ~android.view.WindowManager.LayoutParams.FLAG_SECURE;
+                            XposedBridge.log(TAG + ": cleared window FLAG_SECURE uid=" + uid);
+                        }
+                    }
+                }
+            }
+        };
+        int hooked = hookMethods(wmsClazz, clearer, "relayoutWindow", "addWindow");
+        log("window attr FLAG_SECURE clearer hooked x" + hooked, null);
+    }
+
+    private static void hookRecentsSnapshot(ClassLoader cl) throws ClassNotFoundException {
+        Class<?> arClazz = cl.loadClass("com.android.server.wm.ActivityRecord");
+        int hooked = hookMethods(arClazz, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                param.setResult(Boolean.FALSE);
+            }
+        }, "shouldUseAppThemeSnapshot");
+        log("shouldUseAppThemeSnapshot hooked x" + hooked, null);
     }
 
     static void hookPackage(String packageName, ClassLoader cl) {

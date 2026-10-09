@@ -1,12 +1,14 @@
 package com.xiaokan.qzgflp;
 
 import android.hardware.display.DisplayManager;
+import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.SurfaceControl;
 import android.view.SurfaceControlViewHost;
+import android.view.WindowManager;
 
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
@@ -155,6 +157,48 @@ final class SecureCaptureHooks {
                 logError("hook Oplus failed", t);
             }
         }
+
+        try {
+            hookWindowAttrSecureClear(cl);
+        } catch (Throwable t) {
+            logError("hook WMS attr secure clear failed", t);
+        }
+
+        try {
+            hookRecentsSnapshot(cl);
+        } catch (Throwable t) {
+            if (!(t instanceof ClassNotFoundException)) {
+                logError("hook recents snapshot failed", t);
+            }
+        }
+    }
+
+    private void hookWindowAttrSecureClear(ClassLoader cl) throws ClassNotFoundException {
+        Class<?> wmsClazz = cl.loadClass("com.android.server.wm.WindowManagerService");
+        XposedInterface.Hooker clearer = chain -> {
+            int uid = Binder.getCallingUid();
+            if (uid < 10000) {
+                return chain.proceed();
+            }
+            for (Object arg : chain.getArgs()) {
+                if (arg instanceof WindowManager.LayoutParams) {
+                    WindowManager.LayoutParams lp = (WindowManager.LayoutParams) arg;
+                    if ((lp.flags & WindowManager.LayoutParams.FLAG_SECURE) != 0) {
+                        lp.flags &= ~WindowManager.LayoutParams.FLAG_SECURE;
+                        module.log(Log.INFO, TAG, "cleared window FLAG_SECURE uid=" + uid);
+                    }
+                }
+            }
+            return chain.proceed();
+        };
+        int hooked = hookMethods(wmsClazz, clearer, "relayoutWindow", "addWindow");
+        module.log(Log.INFO, TAG, "window attr FLAG_SECURE clearer hooked x" + hooked);
+    }
+
+    private void hookRecentsSnapshot(ClassLoader cl) throws ClassNotFoundException {
+        Class<?> arClazz = cl.loadClass("com.android.server.wm.ActivityRecord");
+        int hooked = hookMethods(arClazz, chain -> Boolean.FALSE, "shouldUseAppThemeSnapshot");
+        module.log(Log.INFO, TAG, "shouldUseAppThemeSnapshot hooked x" + hooked);
     }
 
     void hookPackage(String packageName, ClassLoader cl) {
