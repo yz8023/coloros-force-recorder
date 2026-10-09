@@ -178,8 +178,19 @@ final class SecureCaptureHooks {
                 }
                 break;
             default:
+                try {
+                    hookSurfaceViewSecure(cl);
+                } catch (Throwable t) {
+                    logError("hook SurfaceView.setSecure failed", t);
+                }
                 break;
         }
+    }
+
+    private void hookSurfaceViewSecure(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
+        Class<?> surfaceViewClazz = cl.loadClass("android.view.SurfaceView");
+        Method method = surfaceViewClazz.getDeclaredMethod("setSecure", boolean.class);
+        module.hook(method).intercept(chain -> chain.proceed(new Object[]{Boolean.FALSE}));
     }
 
     private void hookWindowState(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {

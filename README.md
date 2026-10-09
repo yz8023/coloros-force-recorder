@@ -1,4 +1,4 @@
-# 解除截图录像限制 (v1.2.0)
+# 解除截图录像限制 (v1.2.1)
 
 基于 **libxposed API 102** 的 LSPosed 模块：在 system_server 层解除系统截图与屏幕录像的**安全层限制**，让涉及 `FLAG_SECURE` / Secure Layer 的窗口在任何截图、录屏、投屏路径下都能被完整捕获。
 
@@ -20,10 +20,11 @@
 | `ActivityManagerService.checkPermission` (S~T) | `CAPTURE_BLACKOUT_CONTENT` 放行为 `READ_FRAME_BUFFER` |
 | HyperOS `WindowManagerServiceImpl.notAllowCaptureDisplay` / One UI `WmScreenshotController.canBeScreenshotTarget` / ColorOS `OplusLongshotMainWindow.hasSecure` | 厂商私有限制解除 |
 | `OplusScreenCapture$CaptureArgs$Builder.setUid` (ColorOS 15+) | 截图 uid 校验旁路 |
+| `SurfaceView.setSecure`（作用域内普通应用） | 强制置 false：解除抖音等把页面内容放进 secure SurfaceView 导致的截屏白屏 |
 
 system_server 内先对 `WindowStateAnimator.createSurfaceLocked`、`WindowManagerService.relayoutWindow` 及 lambda 合成类做 **deoptimize**，保证 hook 生效。
 
-覆盖范围：framework 层解除（安全层由图形栈在内核之上绘制，第三方 root 机型同样适用），已内置 ColorOS 16 / HyperOS / One UI / AOSP 路径。
+覆盖范围：framework 层解除（安全层由图形栈在内核之上绘制，第三方 root 机型同样适用），已内置 ColorOS 16 / HyperOS / One UI / AOSP 路径。默认作用域另含抖音（`com.ss.android.ugc.aweme.yyds`，其页面内容使用 secure SurfaceView 渲染，需应用级 hook）；在 LSPosed 中把其他应用加入作用域即可获得同款 SurfaceView 解除。
 
 ## 权限与安全
 
@@ -54,7 +55,7 @@ system_server 内先对 `WindowStateAnimator.createSurfaceLocked`、`WindowManag
 
 ## 签名说明
 
-v1.0.4 / v1.1.x / v1.2.0 使用同一本地开发签名（SHA-256 `db7c3393...`），可直接覆盖安装。
+v1.0.4 / v1.1.x / v1.2.x 使用同一本地开发签名（SHA-256 `db7c3393...`），可直接覆盖安装。
 
 ## 免责声明
 

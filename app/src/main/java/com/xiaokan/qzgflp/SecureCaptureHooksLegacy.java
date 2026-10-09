@@ -190,7 +190,24 @@ final class SecureCaptureHooksLegacy {
                     log("hook ScreenCapture failed", t);
                 }
             }
+        } else {
+            try {
+                hookSurfaceViewSecure(cl);
+            } catch (Throwable t) {
+                log("hook SurfaceView.setSecure failed", t);
+            }
         }
+    }
+
+    private static void hookSurfaceViewSecure(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
+        Class<?> surfaceViewClazz = cl.loadClass("android.view.SurfaceView");
+        Method method = surfaceViewClazz.getDeclaredMethod("setSecure", boolean.class);
+        XposedBridge.hookMethod(method, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                param.args[0] = Boolean.FALSE;
+            }
+        });
     }
 
     private static void hookWindowState(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
