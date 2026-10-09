@@ -3,6 +3,7 @@ package com.xiaokan.qzgflp;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.view.SurfaceControl;
+import android.view.SurfaceControlViewHost;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Member;
@@ -204,6 +205,25 @@ final class SecureCaptureHooksLegacy {
                     log("hook Transaction.setSecure failed", t);
                 }
             }
+            try {
+                hookSurfaceControlBuilderSetSecure(cl);
+            } catch (Throwable t) {
+                if (!(t instanceof ClassNotFoundException)) {
+                    log("hook SurfaceControl.Builder.setSecure failed", t);
+                }
+            }
+            try {
+                hookSurfaceViewChildPackage(cl);
+            } catch (Throwable t) {
+                log("hook SurfaceView.setChildSurfacePackage failed", t);
+            }
+            try {
+                hookNativeSurfacePackageSecure(cl);
+            } catch (Throwable t) {
+                if (!(t instanceof ClassNotFoundException)) {
+                    log("hook native SurfacePackage secure failed", t);
+                }
+            }
         }
     }
 
@@ -225,10 +245,96 @@ final class SecureCaptureHooksLegacy {
         XposedBridge.hookMethod(method, new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
-                XposedBridge.log(TAG + ": Transaction.setSecure(" + param.args[1] + ") -> false");
+                if (Boolean.TRUE.equals(param.args[1])) {
+                    XposedBridge.log(TAG + ": Transaction.setSecure(true) -> false");
+                }
                 param.args[1] = Boolean.FALSE;
             }
         });
+    }
+
+    private static void hookSurfaceControlBuilderSetSecure(ClassLoader cl) throws ClassNotFoundException {
+        Class<?> builderClazz = cl.loadClass("android.view.SurfaceControl$Builder");
+        int hooked = 0;
+        for (Method method : builderClazz.getDeclaredMethods()) {
+            if ("setSecure".equals(method.getName()) && method.getParameterCount() == 1) {
+                XposedBridge.hookMethod(method, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        param.args[0] = Boolean.FALSE;
+                    }
+                });
+                hooked++;
+            }
+        }
+        log("SurfaceControl.Builder.setSecure hooked x" + hooked, null);
+    }
+
+    private static void hookSurfaceViewChildPackage(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
+        Class<?> surfaceViewClazz = cl.loadClass("android.view.SurfaceView");
+        Method method = surfaceViewClazz.getDeclaredMethod("setChildSurfacePackage",
+                cl.loadClass("android.view.SurfaceControlViewHost$SurfacePackage"));
+        XposedBridge.hookMethod(method, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                Object pkg = param.args[0];
+                if (pkg != null) {
+                    clearSecureDelayed(pkg, 0);
+                }
+            }
+        });
+    }
+
+    private static void clearSecureDelayed(Object pkg, int round) {
+        try {
+            android.view.SurfaceControl sc = ((SurfaceControlViewHost.SurfacePackage) pkg).getSurfaceControl();
+            Class<?> txClazz = Class.forName("android.view.SurfaceControl$Transaction");
+            Object tx = txClazz.getDeclaredConstructor().newInstance();
+            Method setSecure = txClazz.getDeclaredMethod("setSecure", android.view.SurfaceControl.class, boolean.class);
+            setSecure.setAccessible(true);
+            setSecure.invoke(tx, sc, Boolean.FALSE);
+            txClazz.getMethod("apply").invoke(tx);
+            if (round < 6) {
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                        () -> clearSecureDelayed(pkg, round + 1), 300);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void hookNativeSurfacePackageSecure(ClassLoader cl) throws ClassNotFoundException {
+        Class<?> pkgClazz = cl.loadClass("android.view.SurfaceControlViewHost$SurfacePackage");
+        int hooked = 0;
+        String[] targets = {"yyds.C3555"};
+        for (String name : targets) {
+            try {
+                Class<?> clazz = cl.loadClass(name);
+                for (Method method : clazz.getDeclaredMethods()) {
+                    boolean takesPkg = false;
+                    for (Class<?> p : method.getParameterTypes()) {
+                        if (p == pkgClazz) {
+                            takesPkg = true;
+                            break;
+                        }
+                    }
+                    if (!takesPkg) continue;
+                    try {
+                        XposedBridge.hookMethod(method, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                param.setResult(Boolean.FALSE);
+                            }
+                        });
+                        hooked++;
+                    } catch (Throwable t) {
+                        log("native hook failed for " + name + "." + method.getName() + ": " + t, null);
+                    }
+                }
+            } catch (ClassNotFoundException e) {
+                continue;
+            }
+        }
+        log("native SurfacePackage secure hooks x" + hooked, null);
     }
 
     private static void hookWindowState(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
