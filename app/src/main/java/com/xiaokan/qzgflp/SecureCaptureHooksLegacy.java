@@ -19,6 +19,8 @@ import de.robv.android.xposed.XposedBridge;
 final class SecureCaptureHooksLegacy {
     private static final String TAG = "ForceCapture";
 
+    private static int nativeHookCount;
+
     private static final String SYSTEMUI = "com.android.systemui";
     private static final String OPLUS_APPPLATFORM = "com.oplus.appplatform";
     private static final String OPLUS_SCREENSHOT = "com.oplus.screenshot";
@@ -106,6 +108,14 @@ final class SecureCaptureHooksLegacy {
             log("hook ScreenCapture failed", t);
         }
 
+        try {
+            hookOplusScreenCapture(cl);
+        } catch (Throwable t) {
+            if (!(t instanceof ClassNotFoundException)) {
+                log("hook OplusScreenCapture(system_server) failed", t);
+            }
+        }
+
         if (Build.VERSION.SDK_INT < 34) {
             try {
                 hookActivityManagerService(cl);
@@ -184,11 +194,23 @@ final class SecureCaptureHooksLegacy {
                 }
             }
         } else if (SYSTEMUI.equals(packageName) || MIUI_SCREENSHOT.equals(packageName)) {
-            if (Build.VERSION.SDK_INT < 34) {
-                try {
-                    hookScreenCapture(cl);
-                } catch (Throwable t) {
-                    log("hook ScreenCapture failed", t);
+            try {
+                hookScreenCapture(cl);
+            } catch (Throwable t) {
+                log("hook ScreenCapture failed", t);
+            }
+            try {
+                hookOplusScreenCapture(cl);
+            } catch (Throwable t) {
+                if (!(t instanceof ClassNotFoundException)) {
+                    log("hook OplusScreenCapture(systemui) failed", t);
+                }
+            }
+            try {
+                hookScreenshotHardwareBuffer(cl);
+            } catch (Throwable t) {
+                if (!(t instanceof ClassNotFoundException)) {
+                    log("hook ScreenshotHardwareBuffer(systemui) failed", t);
                 }
             }
         } else {
@@ -277,6 +299,13 @@ final class SecureCaptureHooksLegacy {
         XposedBridge.hookMethod(method, new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
+                if (nativeHookCount == 0) {
+                    try {
+                        hookNativeSurfacePackageSecure(cl);
+                    } catch (Throwable t) {
+                        log("retry native SurfacePackage secure hook failed", t);
+                    }
+                }
                 Object pkg = param.args[0];
                 if (pkg != null) {
                     clearSecureDelayed(pkg, 0);
@@ -334,6 +363,7 @@ final class SecureCaptureHooksLegacy {
                 continue;
             }
         }
+        nativeHookCount = hooked;
         log("native SurfacePackage secure hooks x" + hooked, null);
     }
 

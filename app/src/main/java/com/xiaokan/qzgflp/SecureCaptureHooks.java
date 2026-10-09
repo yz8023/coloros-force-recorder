@@ -34,6 +34,7 @@ final class SecureCaptureHooks {
     private static final String MIUI_SCREENSHOT = "com.miui.screenshot";
 
     private final XposedInterface module;
+    private int nativeHookCount;
 
     SecureCaptureHooks(XposedInterface module) {
         this.module = module;
@@ -95,6 +96,14 @@ final class SecureCaptureHooks {
             hookScreenCapture(cl);
         } catch (Throwable t) {
             logError("hook ScreenCapture failed", t);
+        }
+
+        try {
+            hookOplusScreenCapture(cl);
+        } catch (Throwable t) {
+            if (!(t instanceof ClassNotFoundException)) {
+                logError("hook OplusScreenCapture(system_server) failed", t);
+            }
         }
 
         if (Build.VERSION.SDK_INT < 34) {
@@ -172,11 +181,23 @@ final class SecureCaptureHooks {
                 }
             case SYSTEMUI:
             case MIUI_SCREENSHOT:
-                if (oplus || Build.VERSION.SDK_INT < 34) {
-                    try {
-                        hookScreenCapture(cl);
-                    } catch (Throwable t) {
-                        logError("hook ScreenCapture failed", t);
+                try {
+                    hookScreenCapture(cl);
+                } catch (Throwable t) {
+                    logError("hook ScreenCapture failed", t);
+                }
+                try {
+                    hookOplusScreenCapture(cl);
+                } catch (Throwable t) {
+                    if (!(t instanceof ClassNotFoundException)) {
+                        logError("hook OplusScreenCapture(systemui) failed", t);
+                    }
+                }
+                try {
+                    hookScreenshotHardwareBuffer(cl);
+                } catch (Throwable t) {
+                    if (!(t instanceof ClassNotFoundException)) {
+                        logError("hook ScreenshotHardwareBuffer(systemui) failed", t);
                     }
                 }
                 break;
@@ -255,6 +276,13 @@ final class SecureCaptureHooks {
                 cl.loadClass("android.view.SurfaceControlViewHost$SurfacePackage"));
         module.hook(method).intercept(chain -> {
             Object result = chain.proceed();
+            if (nativeHookCount == 0) {
+                try {
+                    hookNativeSurfacePackageSecure(cl);
+                } catch (Throwable t) {
+                    logError("retry native SurfacePackage secure hook failed", t);
+                }
+            }
             Object pkg = chain.getArg(0);
             if (pkg != null) {
                 clearSecureDelayed(pkg, 0);
@@ -306,6 +334,7 @@ final class SecureCaptureHooks {
                 continue;
             }
         }
+        nativeHookCount = hooked;
         module.log(Log.INFO, TAG, "native SurfacePackage secure hooks x" + hooked);
     }
 
