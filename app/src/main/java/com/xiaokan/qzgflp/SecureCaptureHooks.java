@@ -178,10 +178,18 @@ final class SecureCaptureHooks {
                 }
                 break;
             default:
+                module.log(Log.INFO, TAG, "app-level hooks for " + packageName);
                 try {
                     hookSurfaceViewSecure(cl);
                 } catch (Throwable t) {
                     logError("hook SurfaceView.setSecure failed", t);
+                }
+                try {
+                    hookTransactionSetSecure(cl);
+                } catch (Throwable t) {
+                    if (!(t instanceof ClassNotFoundException) && !(t instanceof NoSuchMethodException)) {
+                        logError("hook Transaction.setSecure failed", t);
+                    }
                 }
                 break;
         }
@@ -190,7 +198,19 @@ final class SecureCaptureHooks {
     private void hookSurfaceViewSecure(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
         Class<?> surfaceViewClazz = cl.loadClass("android.view.SurfaceView");
         Method method = surfaceViewClazz.getDeclaredMethod("setSecure", boolean.class);
-        module.hook(method).intercept(chain -> chain.proceed(new Object[]{Boolean.FALSE}));
+        module.hook(method).intercept(chain -> {
+            module.log(Log.INFO, TAG, "SurfaceView.setSecure(" + chain.getArg(0) + ") -> false");
+            return chain.proceed(new Object[]{Boolean.FALSE});
+        });
+    }
+
+    private void hookTransactionSetSecure(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
+        Class<?> transactionClazz = cl.loadClass("android.view.SurfaceControl$Transaction");
+        Method method = transactionClazz.getDeclaredMethod("setSecure", SurfaceControl.class, boolean.class);
+        module.hook(method).intercept(chain -> {
+            module.log(Log.INFO, TAG, "Transaction.setSecure(" + chain.getArg(1) + ") -> false");
+            return chain.proceed(new Object[]{chain.getArg(0), Boolean.FALSE});
+        });
     }
 
     private void hookWindowState(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {

@@ -191,10 +191,18 @@ final class SecureCaptureHooksLegacy {
                 }
             }
         } else {
+            XposedBridge.log(TAG + ": app-level hooks for " + packageName);
             try {
                 hookSurfaceViewSecure(cl);
             } catch (Throwable t) {
                 log("hook SurfaceView.setSecure failed", t);
+            }
+            try {
+                hookTransactionSetSecure(cl);
+            } catch (Throwable t) {
+                if (!(t instanceof ClassNotFoundException) && !(t instanceof NoSuchMethodException)) {
+                    log("hook Transaction.setSecure failed", t);
+                }
             }
         }
     }
@@ -205,7 +213,20 @@ final class SecureCaptureHooksLegacy {
         XposedBridge.hookMethod(method, new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
+                XposedBridge.log(TAG + ": SurfaceView.setSecure(" + param.args[0] + ") -> false");
                 param.args[0] = Boolean.FALSE;
+            }
+        });
+    }
+
+    private static void hookTransactionSetSecure(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
+        Class<?> transactionClazz = cl.loadClass("android.view.SurfaceControl$Transaction");
+        Method method = transactionClazz.getDeclaredMethod("setSecure", android.view.SurfaceControl.class, boolean.class);
+        XposedBridge.hookMethod(method, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                XposedBridge.log(TAG + ": Transaction.setSecure(" + param.args[1] + ") -> false");
+                param.args[1] = Boolean.FALSE;
             }
         });
     }
