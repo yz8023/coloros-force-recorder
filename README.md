@@ -1,8 +1,8 @@
-# 解除截图录像限制 (v1.1.0)
+# 解除截图录像限制 (v1.1.1)
 
 基于 **libxposed API 102** 的 LSPosed 模块：在 system_server 层解除系统截图与屏幕录像的**安全层限制**，让涉及 `FLAG_SECURE` / Secure Layer 的窗口在任何截图、录屏、投屏路径下都能被完整捕获。
 
-> 前身是 coloros 专用强制录屏（v1.0.4，对原 APK 的源码级逆向复原）；v1.1.0 起按 LSPosed 官方 `DisableFlagSecure` 方案（LuckyTool 集成版）重写功能。
+> 前身是 coloros 专用强制录屏（v1.0.4，对原 APK 的源码级逆向复原）；v1.1.0 起按 LSPosed 官方 `DisableFlagSecure` 方案（LuckyTool 集成版）重写功能。v1.1.1 补齐现代 Xposed API 的模块识别声明。
 
 ## 工作原理
 
@@ -29,7 +29,8 @@ system_server 内先对 `WindowStateAnimator.createSurfaceLocked`、`WindowManag
 
 - Manifest **零 uses-permission**：无网络、无存储
 - 唯一组件为 exported 的 `MainActivity`（纯展示 + LSPosed 模块设置入口）
-- 入口声明：`META-INF/xposed/java_init.list`
+- 入口声明（现代 Xposed API）：`META-INF/xposed/java_init.list`（入口类）、`META-INF/xposed/module.prop`（`minApiVersion=100` / `targetApiVersion=102` / `staticScope=false`）、`META-INF/xposed/scope.list`（默认作用域）
+- 兼容声明（旧版 Xposed 管理器）：Manifest 保留 `xposedmodule` / `xposedminversion` meta-data
 - 依赖：`compileOnly(files("libs/libxposed-api-102.0.0.jar"))`（已内置，无需外网仓库）
 
 ## 构建
@@ -50,7 +51,7 @@ system_server 内先对 `WindowStateAnimator.createSurfaceLocked`、`WindowManag
 
 ## 签名说明
 
-v1.0.4 与 v1.1.0 使用同一本地开发签名（SHA-256 `db7c3393...`），可直接覆盖安装。
+v1.0.4 / v1.1.0 / v1.1.1 使用同一本地开发签名（SHA-256 `db7c3393...`），可直接覆盖安装。
 
 ## 免责声明
 
