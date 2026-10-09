@@ -363,29 +363,40 @@ final class SecureCaptureHooksLegacy {
         }, "createVirtualDisplayLocked");
     }
 
-    private static void hookActivityTaskManagerService(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
+    private static void hookActivityTaskManagerService(ClassLoader cl) throws ClassNotFoundException {
         Class<?> atmsClazz = cl.loadClass("com.android.server.wm.ActivityTaskManagerService");
-        Class<?> iBinderClazz = cl.loadClass("android.os.IBinder");
-        Class<?> iScreenCaptureObserverClazz = cl.loadClass("android.app.IScreenCaptureObserver");
-        Method method = atmsClazz.getDeclaredMethod("registerScreenCaptureObserver", iBinderClazz, iScreenCaptureObserverClazz);
-        XposedBridge.hookMethod(method, new XC_MethodHook() {
+        int hooked = hookMethods(atmsClazz, new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
                 param.setResult(null);
             }
-        });
+        }, "registerScreenCaptureObserver");
+        log("registerScreenCaptureObserver hooked x" + hooked, null);
+        if (hooked == 0) {
+            dumpCandidates(atmsClazz, "screencapture");
+        }
     }
 
-    private static void hookWindowManagerService(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
+    private static void hookWindowManagerService(ClassLoader cl) throws ClassNotFoundException {
         Class<?> wmsClazz = cl.loadClass("com.android.server.wm.WindowManagerService");
-        Class<?> iScreenRecordingCallbackClazz = cl.loadClass("android.window.IScreenRecordingCallback");
-        Method method = wmsClazz.getDeclaredMethod("registerScreenRecordingCallback", iScreenRecordingCallbackClazz);
-        XposedBridge.hookMethod(method, new XC_MethodHook() {
+        int hooked = hookMethods(wmsClazz, new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
                 param.setResult(Boolean.FALSE);
             }
-        });
+        }, "registerScreenRecordingCallback");
+        log("registerScreenRecordingCallback hooked x" + hooked, null);
+        if (hooked == 0) {
+            dumpCandidates(wmsClazz, "screenrecording");
+        }
+    }
+
+    private static void dumpCandidates(Class<?> clazz, String keyword) {
+        for (Method method : clazz.getDeclaredMethods()) {
+            if (method.getName().toLowerCase().contains(keyword)) {
+                log("  candidate: " + method.toGenericString(), null);
+            }
+        }
     }
 
     private static void hookActivityManagerService(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
@@ -459,13 +470,16 @@ final class SecureCaptureHooksLegacy {
         }, "canBeScreenshotTarget");
     }
 
-    private static void hookMethods(Class<?> clazz, XC_MethodHook hooker, String... names) {
+    private static int hookMethods(Class<?> clazz, XC_MethodHook hooker, String... names) {
+        int count = 0;
         for (Method method : clazz.getDeclaredMethods()) {
             for (String name : names) {
                 if (method.getName().equals(name)) {
                     XposedBridge.hookMethod(method, hooker);
+                    count++;
                 }
             }
         }
+        return count;
     }
 }

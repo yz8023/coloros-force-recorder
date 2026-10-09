@@ -340,19 +340,30 @@ final class SecureCaptureHooks {
         }, "createVirtualDisplayLocked");
     }
 
-    private void hookActivityTaskManagerService(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
+    private void hookActivityTaskManagerService(ClassLoader cl) throws ClassNotFoundException {
         Class<?> atmsClazz = cl.loadClass("com.android.server.wm.ActivityTaskManagerService");
-        Class<?> iBinderClazz = cl.loadClass("android.os.IBinder");
-        Class<?> iScreenCaptureObserverClazz = cl.loadClass("android.app.IScreenCaptureObserver");
-        Method method = atmsClazz.getDeclaredMethod("registerScreenCaptureObserver", iBinderClazz, iScreenCaptureObserverClazz);
-        module.hook(method).intercept(chain -> null);
+        int hooked = hookMethods(atmsClazz, chain -> null, "registerScreenCaptureObserver");
+        module.log(Log.INFO, TAG, "registerScreenCaptureObserver hooked x" + hooked);
+        if (hooked == 0) {
+            dumpCandidates(atmsClazz, "screencapture");
+        }
     }
 
-    private void hookWindowManagerService(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
+    private void hookWindowManagerService(ClassLoader cl) throws ClassNotFoundException {
         Class<?> wmsClazz = cl.loadClass("com.android.server.wm.WindowManagerService");
-        Class<?> iScreenRecordingCallbackClazz = cl.loadClass("android.window.IScreenRecordingCallback");
-        Method method = wmsClazz.getDeclaredMethod("registerScreenRecordingCallback", iScreenRecordingCallbackClazz);
-        module.hook(method).intercept(chain -> false);
+        int hooked = hookMethods(wmsClazz, chain -> false, "registerScreenRecordingCallback");
+        module.log(Log.INFO, TAG, "registerScreenRecordingCallback hooked x" + hooked);
+        if (hooked == 0) {
+            dumpCandidates(wmsClazz, "screenrecording");
+        }
+    }
+
+    private void dumpCandidates(Class<?> clazz, String keyword) {
+        for (Method method : clazz.getDeclaredMethods()) {
+            if (method.getName().toLowerCase().contains(keyword)) {
+                module.log(Log.INFO, TAG, "  candidate: " + method.toGenericString());
+            }
+        }
     }
 
     private void hookActivityManagerService(ClassLoader cl) throws ClassNotFoundException, NoSuchMethodException {
@@ -415,12 +426,15 @@ final class SecureCaptureHooks {
         }
     }
 
-    private void hookMethods(Class<?> clazz, XposedInterface.Hooker hooker, String... names) {
+    private int hookMethods(Class<?> clazz, XposedInterface.Hooker hooker, String... names) {
         List<String> list = Arrays.asList(names);
+        int count = 0;
         for (Method method : clazz.getDeclaredMethods()) {
             if (list.contains(method.getName())) {
                 module.hook(method).intercept(hooker);
+                count++;
             }
         }
+        return count;
     }
 }

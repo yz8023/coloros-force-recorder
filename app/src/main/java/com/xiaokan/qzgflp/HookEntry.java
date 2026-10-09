@@ -36,7 +36,6 @@ public final class HookEntry extends XposedModule {
     @Override
     public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
         super.onPackageReady(param);
-        if (!param.isFirstPackage()) return;
         new SecureCaptureHooks(this).hookPackage(param.getPackageName(), param.getClassLoader());
     }
 }
