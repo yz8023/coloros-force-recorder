@@ -8,10 +8,10 @@ android {
 
     defaultConfig {
         applicationId = "com.xiaokan.qzgflp"
-        minSdk = 36
+        minSdk = 28
         targetSdk = 36
-        versionCode = 104
-        versionName = "1.0.4"
+        versionCode = 110
+        versionName = "1.1.0"
     }
 
     buildTypes {
@@ -27,5 +27,5 @@ android {
 }
 
 dependencies {
-    compileOnly(files("libs/api-82.jar"))
+    compileOnly(files("libs/libxposed-api-102.0.0.jar", "libs/annotation-1.0.0.jar"))
 }

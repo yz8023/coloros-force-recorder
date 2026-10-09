@@ -2,5 +2,10 @@
 <resources>
     <array name="xposed_scope">
         <item>android</item>
+        <item>com.android.systemui</item>
+        <item>com.oplus.screenshot</item>
+        <item>com.oplus.appplatform</item>
+        <item>com.flyme.systemuiex</item>
+        <item>com.miui.screenshot</item>
     </array>
 </resources>

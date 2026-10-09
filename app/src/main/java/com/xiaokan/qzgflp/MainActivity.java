@@ -1,7 +1,6 @@
 package com.xiaokan.qzgflp;
 
 import android.app.Activity;
-import android.content.pm.PackageInfo;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -59,7 +58,7 @@ public final class MainActivity extends Activity {
         card.addView(title, matchWrap());
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("1.0.4 · com.xiaokan.qzgflp");
+        subtitle.setText("1.1.0 · com.xiaokan.qzgflp · libxposed API 102");
         subtitle.setTextSize(12);
         subtitle.setTextColor(TEXT_SOFT);
         subtitle.setGravity(Gravity.CENTER);
@@ -69,24 +68,19 @@ public final class MainActivity extends Activity {
         card.addView(divider(), matchWrap());
 
         addSection(card, "使用说明");
-        addText(card, "① 在 LSPosed 中启用本模块，作用域只勾选「系统框架」（android），然后重启手机。", 16, TEXT_MAIN);
-        addText(card, "② 继续使用系统录屏入口。分辨率、码率、帧率、方向、编码格式和声音都在系统录屏设置里调整，这里没有录制参数，也无需打开本模块才能录屏。", 16, TEXT_MAIN);
-        addText(card, "③ 手机需要已 Root 和 LSPosed；无需给屏幕录制或本模块授权 su。", 16, TEXT_MAIN);
+        addText(card, "① 在 LSPosed 中启用本模块，作用域勾选「系统框架（android）」，可再加「系统界面」「Oplus 截屏」「Oplus 应用平台」等截图组件，然后重启手机。", 15, TEXT_MAIN);
+        addText(card, "② 解除系统截图与屏幕录像的内容限制：FLAG_SECURE 安全窗口、SurfaceView 安全层、安全层黑屏替换、录屏/截图监听回调全部放行，涉及应用都能正常截到完整画面。", 15, TEXT_MAIN);
+        addText(card, "③ 手机需要已 Root 并装有支持 libxposed 新 API 的 LSPosed；ColorOS 16 已适配，同时兼容 HyperOS / One UI / 原生等第三方 root 机型。", 15, TEXT_MAIN);
 
-        addSection(card, "适配环境");
-        addText(card, "Android 16 · 系统录屏 16.5.12（160005012）", 15, LILAC);
-        try {
-            PackageInfo info = getPackageManager().getPackageInfo("com.oplus.screenrecorder", 0);
-            addText(card, "本机录屏版本：" + info.versionName + " / " + info.getLongVersionCode(), 15, LILAC);
-        } catch (Exception e) {
-            addText(card, "本机录屏版本：未找到", 15, LILAC);
-        }
+        addSection(card, "适配范围");
+        addText(card, "Android 9（API 28）起 · framework 层解除，与应用自身实现无关", 15, LILAC);
+        addText(card, "内置 HyperOS（小米）/ One UI（三星）/ ColorOS（Oplus 长截屏）私有限制解除", 15, LILAC);
 
         addSection(card, "小提示");
-        addText(card, "如果安装过旧包名的模块，请先在 LSPosed 关闭旧模块；停用本模块并重启即可恢复原系统录屏。", 15, TEXT_SOFT);
+        addText(card, "模块在 system_server 内全量生效；在 LSPosed 停用模块并重启即可完全恢复系统默认行为。", 15, TEXT_SOFT);
 
         TextView footer = new TextView(this);
-        footer.setText("ColorOSForceRecorder · 悄悄帮你录下完整画面的小尾巴");
+        footer.setText("ForceCapture · 让每一帧画面都愿意被记住");
         footer.setTextSize(12);
         footer.setTextColor(PINK);
         footer.setGravity(Gravity.CENTER);

@@ -1,47 +1,36 @@
-# coloros 专用强制录屏 (v1.0.4)
+# 解除截图录像限制 (v1.1.0)
 
-ColorOS 16 / Android 16 下的 LSPosed 模块：把"系统全屏录屏"的捕获源从虚拟屏幕替换为**物理屏幕镜像层**，实现无需确认弹窗、无人值守的强制录屏。
+基于 **libxposed API 102** 的 LSPosed 模块：在 system_server 层解除系统截图与屏幕录像的**安全层限制**，让涉及 `FLAG_SECURE` / Secure Layer 的窗口在任何截图、录屏、投屏路径下都能被完整捕获。
 
-> 本仓库为对原 APK（v1.0.3，commit b214c2c）的**源码级逆向复原**，并做了 UI 重绘与版本号提升（v1.0.4）。
+> 前身是 coloros 专用强制录屏（v1.0.4，对原 APK 的源码级逆向复原）；v1.1.0 起按 LSPosed 官方 `DisableFlagSecure` 方案（LuckyTool 集成版）重写功能。
 
 ## 工作原理
 
-模块入口 `com.xiaokan.qzgflp.HookEntry` 只在 `android` 包（system_server）进程激活，命中以下条件后替换捕获源：
+模块入口 `com.xiaokan.qzgflp.HookEntry` 继承 `io.github.libxposed.api.XposedModule`，在 `android` 包（system_server）与截图相关组件激活：
 
-| 条件 | 期望值 |
+| Hook 目标 | 作用 |
 | --- | --- |
-| 录屏应用包名 | `com.oplus.screenrecorder` |
-| 版本（longVersionCode） | `160005012`（16.5.12） |
-| 显示名 | `OPLUSScreenRecording` |
-| contentToRecord / displayToRecord | 均为 0（全屏模式） |
-| displayId | > 0 且等于 virtualDisplayId |
-| consent 弹窗 | 无等待（即"免确认"路径） |
-| targetUid | == -1 |
+| `WindowState.isSecureLocked` | 窗口级 FLAG_SECURE 解除（Surface 创建路径保留原语义，防止破坏 DRM） |
+| `ScreenCapture[Internal]$CaptureArgs` | 捕获参数强制包含安全层（`mSecureContentPolicy=1` / `mCaptureSecureLayers=true`），覆盖 `nativeCaptureDisplay` / `nativeCaptureLayers` |
+| `ScreenshotHardwareBuffer.containsSecureLayers` | 捕获结果不再被判定为含安全层 |
+| `DisplayControl.createVirtualDisplay` / `SurfaceControl.createDisplay` | 系统虚拟显示强制 secure 属性 |
+| `VirtualDisplayAdapter.createVirtualDisplayLocked` | MediaProjection 录屏虚拟屏补 `VIRTUAL_DISPLAY_FLAG_SECURE`，录屏不再黑屏 |
+| `WindowManagerService.registerScreenRecordingCallback` (V+) | 屏蔽录屏检测回调 |
+| `ActivityTaskManagerService.registerScreenCaptureObserver` (U+) | 屏蔽截屏监听通知 |
+| `ActivityManagerService.checkPermission` (S~T) | `CAPTURE_BLACKOUT_CONTENT` 放行为 `READ_FRAME_BUFFER` |
+| HyperOS `WindowManagerServiceImpl.notAllowCaptureDisplay` / One UI `WmScreenshotController.canBeScreenshotTarget` / ColorOS `OplusLongshotMainWindow.hasSecure` | 厂商私有限制解除 |
+| `OplusScreenCapture$CaptureArgs$Builder.setUid` (ColorOS 15+) | 截图 uid 校验旁路 |
 
-Hook 链（`SystemCaptureHook`）：
+system_server 内先对 `WindowStateAnimator.createSurfaceLocked`、`WindowManagerService.relayoutWindow` 及 lambda 合成类做 **deoptimize**，保证 hook 生效。
 
-1. `com.android.server.wm.ContentRecorder.startRecordingIfNeeded()` 的 before 阶段建立会话帧（`Frame`）记录参数；
-2. after 阶段用 `DisplayMirror.create()` 以 **system uid（1000）** 直连 `SurfaceFlingerAIDL`（裸 Binder，`CREATE_CONNECTION=3` / `MIRROR_DISPLAY=5`）创建物理屏镜像层；
-3. 经 `SurfaceControl.setLayerStack()` + `show()` 接入 WMS，供录屏虚拟屏取流；
-4. 会话结束时移除镜像层并解除全部 hook。
-
-任何一步失败都 **fail-closed**：移除镜像层、unhook 全部回调，录屏退回系统默认行为。
-
-`DisplayMirror` 的 Parcel 布局、反射目标、错误文案与原始实现完全一致（逐字符串对账自原 dex）。
-
-## 界面（v1.0.4 重绘）
-
-- 粉紫渐变背景（`#FFE0EB → #FFF1F6 → #F1E8FF`）+ 白色圆角卡片
-- 爱心分区标题、粉粉分隔线、二次元萝莉风配色
-- 动态显示本机检测到的录屏应用版本与模块版本（104 / 1.0.4）
-- 零新增权限、零新增组件
+覆盖范围：framework 层解除（安全层由图形栈在内核之上绘制，第三方 root 机型同样适用），已内置 ColorOS 16 / HyperOS / One UI / AOSP 路径。
 
 ## 权限与安全
 
-- Manifest **零 uses-permission**：无网络、无存储、无摄像头/麦克风
-- 唯一组件为 exported 的 `MainActivity`（纯展示）
-- LSPosed 作用域：仅"系统框架"（`android`）
-- 构建产物可对照 `app/libs/api-82.jar`（编译期 API 桩，`compileOnly`，不打包进 APK）
+- Manifest **零 uses-permission**：无网络、无存储
+- 唯一组件为 exported 的 `MainActivity`（纯展示 + LSPosed 模块设置入口）
+- 入口声明：`META-INF/xposed/java_init.list`
+- 依赖：`compileOnly(files("libs/libxposed-api-102.0.0.jar"))`（已内置，无需外网仓库）
 
 ## 构建
 
@@ -49,20 +38,20 @@ Hook 链（`SystemCaptureHook`）：
 ./gradlew :app:assembleRelease
 ```
 
-- minSdk = targetSdk = compileSdk = 36（Android 16）
-- Xposed API：`compileOnly(files("libs/api-82.jar"))`（已内置，无需外网仓库）
+- compileSdk = 36，minSdk = 28，targetSdk = 36
+- Xposed API：libxposed API 102（`io.github.libxposed:api:102.0.0`）
 - Java 11 兼容
 
 ## 安装要求
 
-1. 已 root 并安装 LSPosed
-2. ColorOS 16 / Android 16，录屏应用版本恰为 **16.5.12**（版本不符时模块自动不生效）
-3. 在 LSPosed 中启用模块，作用域勾选"系统框架"，重启系统框架
+1. 已 root 并安装支持 libxposed 新 API 的 LSPosed
+2. 在 LSPosed 中启用模块，作用域勾选「系统框架」，可选加截图相关组件，重启系统框架
+3. 在 LSPosed 停用模块并重启即可完全恢复系统默认行为
 
 ## 签名说明
 
-本仓库发布的 APK 使用本地生成的开发签名（CN=ColorOSForceRecorder Local）。原 APK 为另一自签证书，安装前需卸载旧版。
+v1.0.4 与 v1.1.0 使用同一本地开发签名（SHA-256 `db7c3393...`），可直接覆盖安装。
 
 ## 免责声明
 
-仅供学习 Android framework / SurfaceFlinger / LSPosed Hook 技术研究，请勿用于侵犯他人隐私的场景，使用带来的后果由使用者自行承担。
+仅供学习 Android framework / SurfaceFlinger / libxposed 技术研究，请勿用于侵犯他人隐私的场景，使用带来的后果由使用者自行承担。
