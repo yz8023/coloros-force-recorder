@@ -23,6 +23,41 @@ public final class HookEntry extends XposedModule {
     public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
         super.onModuleLoaded(param);
         this.log(Log.INFO, TAG, "loaded in " + param.getProcessName());
+        try {
+            final android.content.SharedPreferences rp = this.getRemotePreferences("cfg");
+            Cfg.setRemote(key -> {
+                try {
+                    android.os.Bundle b = new android.os.Bundle();
+                    boolean any = false;
+                    for (String[] s : FeatureKeys.SWITCHES) {
+                        if (rp.contains(s[0])) {
+                            b.putBoolean("b_" + s[0], rp.getBoolean(s[0],
+                                    (Boolean) FeatureKeys.defaultValue(s[0])));
+                            any = true;
+                        }
+                    }
+                    for (String ik : new String[]{FeatureKeys.LAYOUT_ROWS,
+                            FeatureKeys.LAYOUT_COLS}) {
+                        if (rp.contains(ik)) {
+                            b.putInt("i_" + ik, rp.getInt(ik,
+                                    (Integer) FeatureKeys.defaultValue(ik)));
+                            any = true;
+                        }
+                    }
+                    if (rp.contains(FeatureKeys.TILE_SCRIPT)) {
+                        b.putString("s_" + FeatureKeys.TILE_SCRIPT,
+                                rp.getString(FeatureKeys.TILE_SCRIPT,
+                                        (String) FeatureKeys.defaultValue(FeatureKeys.TILE_SCRIPT)));
+                        any = true;
+                    }
+                    return any ? b : null;
+                } catch (Throwable t) {
+                    return null;
+                }
+            });
+        } catch (Throwable t) {
+            this.log(Log.WARN, TAG, "remote prefs unavailable", t);
+        }
     }
 
     @Override
@@ -31,11 +66,21 @@ public final class HookEntry extends XposedModule {
         SecureCaptureHooks hooks = new SecureCaptureHooks(this);
         hooks.deoptimizeSystemServer(param.getClassLoader());
         hooks.hookSystemServer(param.getClassLoader());
+        try {
+            new MultiFeatures(this).onSystemServer(param.getClassLoader());
+        } catch (Throwable t) {
+            this.log(Log.WARN, TAG, "multi-features system server failed", t);
+        }
     }
 
     @Override
     public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
         super.onPackageReady(param);
         new SecureCaptureHooks(this).hookPackage(param.getPackageName(), param.getClassLoader());
+        try {
+            new MultiFeatures(this).onPackage(param.getPackageName(), param.getClassLoader());
+        } catch (Throwable t) {
+            this.log(Log.WARN, TAG, "multi-features package failed", t);
+        }
     }
 }
