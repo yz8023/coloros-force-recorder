@@ -68,8 +68,9 @@ public final class Cfg {
                     (Integer) FeatureKeys.defaultValue(FeatureKeys.LAYOUT_ROWS));
             sCache.putInt("i_" + FeatureKeys.LAYOUT_COLS,
                     (Integer) FeatureKeys.defaultValue(FeatureKeys.LAYOUT_COLS));
-            sCache.putString("s_" + FeatureKeys.TILE_SCRIPT,
-                    (String) FeatureKeys.defaultValue(FeatureKeys.TILE_SCRIPT));
+            for (String sk : FeatureKeys.STRING_KEYS) {
+                sCache.putString("s_" + sk, (String) FeatureKeys.defaultValue(sk));
+            }
         }
     }
 

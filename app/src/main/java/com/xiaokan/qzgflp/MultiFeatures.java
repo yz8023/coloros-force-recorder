@@ -2,8 +2,10 @@ package com.xiaokan.qzgflp;
 
 import android.app.Activity;
 import android.app.AppOpsManager;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
@@ -106,7 +108,9 @@ final class MultiFeatures {
         hookRootCheck(cl);
         hookSplitScreen(cl);
         hookPmsChecks(cl);
+        hookDefaultAppPolicy(cl);
         hookUninstallBlacklist(cl);
+        hookInstallerRedirect(cl);
     }
 
     private void hook32Bit(ClassLoader cl) {
@@ -238,6 +242,58 @@ final class MultiFeatures {
         }
     }
 
+    // ── 默认应用策略（OShin qd0 移植）──
+
+    private void hookDefaultAppPolicy(ClassLoader cl) {
+        try {
+            if (!Cfg.bool(FeatureKeys.ENABLE_CUSTOM_FILE_MANAGER)
+                    && !Cfg.bool(FeatureKeys.FORBID_FILE_AND_CALENDAR)) return;
+            Class<?> c = cl.loadClass("com.android.server.pm.OplusDefaultAppPolicyManager");
+            int n = 0;
+            for (Method m : ms(c, "interceptPickerIntent")) {
+                if (m.getParameterCount() != 2
+                        || m.getParameterTypes()[0] != android.content.Intent.class
+                        || m.getParameterTypes()[1] != java.util.List.class) continue;
+                module.hook(m).intercept(chain -> {
+                    if (Cfg.bool(FeatureKeys.FORBID_FILE_AND_CALENDAR)) return null;
+                    if (!Cfg.bool(FeatureKeys.ENABLE_CUSTOM_FILE_MANAGER)) return chain.proceed();
+                    java.util.List<?> args = chain.getArgs();
+                    if (args.size() < 2 || !(args.get(1) instanceof java.util.List)) {
+                        return chain.proceed();
+                    }
+                    java.util.Set<String> allowed = allowedPickerPackages();
+                    Object match = null;
+                    for (Object ri : (java.util.List<?>) args.get(1)) {
+                        if (allowed.contains(pickerPackageName(ri))) match = ri;
+                    }
+                    return match != null ? match : chain.proceed();
+                });
+                n++;
+            }
+            logOk("default-app-policy", n);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "default-app-policy failed", t);
+        }
+    }
+
+    private static java.util.Set<String> allowedPickerPackages() {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (String s : Cfg.str(FeatureKeys.CUSTOM_FILE_MANAGER_PKG).split(",")) {
+            String t = s.trim();
+            if (!t.isEmpty()) out.add(t);
+        }
+        return out;
+    }
+
+    private static String pickerPackageName(Object ri) {
+        try {
+            Object ai = ri.getClass().getField("activityInfo").get(ri);
+            return (String) ai.getClass().getField("packageName").get(ai);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     // ── 应用卸载黑名单（OShin xm0 移植）──
 
     /**
@@ -285,6 +341,159 @@ final class MultiFeatures {
         }
     }
 
+    // ── 安装器/卸载器重定向（OShin d80/c80 移植）──
+
+    /**
+     * system_server 侧：ActivityStarter.execute 前改写待启动 Intent。
+     * 卸载：ACTION_DELETE / ACTION_UNINSTALL_PACKAGE 且带 data → setPackage(uninstaller_target_packages)。
+     * 安装：ACTION_INSTALL_PACKAGE，或（组件类名含 InstallStart 或无组件）且 type 为
+     * application/vnd.android.package-archive → setPackage(installer_target_packages) 并加
+     * NEW_TASK|GRANT_READ_URI_PERMISSION；ACTION_GET_CONTENT / ACTION_CHOOSER 明确排除。
+     * Intent 原地修改即可生效（Request.intent 指向同一对象）。
+     */
+    private void hookInstallerRedirect(ClassLoader cl) {
+        try {
+            if (!Cfg.bool(FeatureKeys.ENABLE_INSTALLER_REDIRECT)
+                    && !Cfg.bool(FeatureKeys.ENABLE_UNINSTALLER_REDIRECT)) return;
+            Class<?> c = cl.loadClass("com.android.server.wm.ActivityStarter");
+            Class<?> reqCls = null;
+            for (Class<?> ic : c.getDeclaredClasses()) {
+                if (ic.getSimpleName().equals("Request")) {
+                    reqCls = ic;
+                    break;
+                }
+            }
+            final Field intentF = reqCls != null ? findField(reqCls, "intent") : null;
+            final Class<?> reqType = reqCls;
+            int n = 0;
+            for (Method m : ms(c, "execute")) {
+                module.hook(m).intercept(chain -> {
+                    Object self = chain.getThisObject();
+                    Object request = null;
+                    List<Object> args = chain.getArgs();
+                    if (!args.isEmpty() && args.get(0) != null && reqType != null
+                            && reqType.isInstance(args.get(0))) {
+                        request = args.get(0);
+                    }
+                    if (request == null && self != null) {
+                        try {
+                            request = fieldValue(self, "mRequest");
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                    if (request == null) return chain.proceed();
+                    Intent intent = readRequestIntent(request, intentF);
+                    if (intent == null) return chain.proceed();
+                    String action = intent.getAction();
+                    if (Intent.ACTION_DELETE.equals(action)
+                            || "android.intent.action.UNINSTALL_PACKAGE".equals(action)) {
+                        if (intent.getData() != null && Cfg.bool(FeatureKeys.ENABLE_UNINSTALLER_REDIRECT)) {
+                            String target = Cfg.str(FeatureKeys.UNINSTALLER_TARGET_PACKAGES).trim();
+                            if (!target.isEmpty()) {
+                                intent.setPackage(target);
+                                intent.setComponent(null);
+                            }
+                        }
+                        return chain.proceed();
+                    }
+                    boolean redirect;
+                    if (Intent.ACTION_GET_CONTENT.equals(action) || Intent.ACTION_CHOOSER.equals(action)) {
+                        redirect = false;
+                    } else if ("android.intent.action.INSTALL_PACKAGE".equals(action)) {
+                        redirect = true;
+                    } else {
+                        ComponentName cn = intent.getComponent();
+                        if (cn != null) {
+                            redirect = cn.getClassName().contains("InstallStart")
+                                    && "application/vnd.android.package-archive".equals(intent.getType());
+                        } else {
+                            redirect = "application/vnd.android.package-archive".equals(intent.getType());
+                        }
+                    }
+                    if (!redirect || !Cfg.bool(FeatureKeys.ENABLE_INSTALLER_REDIRECT)) return chain.proceed();
+                    String target = Cfg.str(FeatureKeys.INSTALLER_TARGET_PACKAGES).trim();
+                    if (target.isEmpty()) return chain.proceed();
+                    intent.setPackage(target);
+                    intent.setComponent(null);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    return chain.proceed();
+                });
+                n++;
+            }
+            logOk("installer-redirect", n);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "installer-redirect failed", t);
+        }
+    }
+
+    private static Intent readRequestIntent(Object request, Field f) {
+        if (f != null) {
+            try {
+                Object v = f.get(request);
+                if (v instanceof Intent) return (Intent) v;
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            Object v = fieldValue(request, "intent");
+            if (v instanceof Intent) return (Intent) v;
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * packageinstaller 进程侧：Activity.onCreate(Bundle) 后检查安装入口，
+     * 命中（PackageInstallerActivity 或带 package-archive data 的页面，排除 InstallStart）
+     * 时跳转到自定义安装器并结束自身。
+     */
+    private void hookInstallerActivity(ClassLoader cl) {
+        try {
+            if (!Cfg.bool(FeatureKeys.ENABLE_INSTALLER_REDIRECT)) return;
+            int n = 0;
+            for (Method m : ms(android.app.Activity.class, "onCreate")) {
+                if (m.getParameterCount() != 1
+                        || m.getParameterTypes()[0] != android.os.Bundle.class) continue;
+                module.hook(m).intercept(chain -> {
+                    Object res = chain.proceed();
+                    try {
+                        redirectInstallerActivity(chain.getThisObject());
+                    } catch (Throwable t) {
+                        module.log(Log.WARN, TAG, "installer-activity redirect failed", t);
+                    }
+                    return res;
+                });
+                n++;
+            }
+            logOk("installer-activity", n);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "installer-activity failed", t);
+        }
+    }
+
+    private void redirectInstallerActivity(Object self) {
+        if (!Cfg.bool(FeatureKeys.ENABLE_INSTALLER_REDIRECT) || !(self instanceof Activity)) return;
+        Activity act = (Activity) self;
+        Intent intent = act.getIntent();
+        if (intent == null) return;
+        Uri uri = intent.getData();
+        if (uri == null) return;
+        String type = intent.getType();
+        String lower = act.getClass().getName().toLowerCase();
+        boolean installerLike = lower.contains("packageinstalleractivity")
+                || lower.contains("installstart")
+                || (type != null && type.contains("application/vnd.android.package-archive"));
+        if (!installerLike || lower.contains("installstart")) return;
+        String target = Cfg.str(FeatureKeys.INSTALLER_TARGET_PACKAGES).trim();
+        if (target.isEmpty() || act.getPackageName().equals(target)) return;
+        Intent redirect = new Intent(Intent.ACTION_VIEW);
+        redirect.setPackage(target);
+        redirect.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        redirect.setDataAndType(uri, type);
+        act.startActivity(redirect);
+        act.finish();
+    }
+
     // ── 应用内分发 ──
 
     void onPackage(String pkg, ClassLoader cl) {
@@ -296,6 +505,7 @@ final class MultiFeatures {
                 hookBadges(cl);
             } else if (pkg.startsWith("com.android.packageinstaller")) {
                 hookInstaller(cl);
+                hookInstallerActivity(cl);
             } else if (pkg.equals("com.android.settings")) {
                 int n = 0;
                 try {

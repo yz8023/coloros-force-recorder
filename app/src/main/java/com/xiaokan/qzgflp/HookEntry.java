@@ -43,11 +43,12 @@ public final class HookEntry extends XposedModule {
                             any = true;
                         }
                     }
-                    if (rp.contains(FeatureKeys.TILE_SCRIPT)) {
-                        b.putString("s_" + FeatureKeys.TILE_SCRIPT,
-                                rp.getString(FeatureKeys.TILE_SCRIPT,
-                                        (String) FeatureKeys.defaultValue(FeatureKeys.TILE_SCRIPT)));
-                        any = true;
+                    for (String sk : FeatureKeys.STRING_KEYS) {
+                        if (rp.contains(sk)) {
+                            b.putString("s_" + sk, rp.getString(sk,
+                                    (String) FeatureKeys.defaultValue(sk)));
+                            any = true;
+                        }
                     }
                     return any ? b : null;
                 } catch (Throwable t) {

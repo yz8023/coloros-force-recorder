@@ -1,6 +1,9 @@
 package com.xiaokan.qzgflp;
 
 import android.app.Activity;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.net.Uri;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
@@ -89,7 +92,9 @@ final class FeatureHooksLegacy {
         hookRootCheck(cl);
         hookSplitScreen(cl);
         hookPmsChecks(cl);
+        hookDefaultAppPolicy(cl);
         hookUninstallBlacklist(cl);
+        hookInstallerRedirect(cl);
     }
 
     private static void hook32Bit(ClassLoader cl) {
@@ -219,6 +224,63 @@ final class FeatureHooksLegacy {
         }
     }
 
+    // ── 默认应用策略（OShin qd0 移植）──
+
+    private static void hookDefaultAppPolicy(ClassLoader cl) {
+        try {
+            if (!Cfg.bool(FeatureKeys.ENABLE_CUSTOM_FILE_MANAGER)
+                    && !Cfg.bool(FeatureKeys.FORBID_FILE_AND_CALENDAR)) return;
+            Class<?> c = cl.loadClass("com.android.server.pm.OplusDefaultAppPolicyManager");
+            int n = 0;
+            for (Method m : ms(c, "interceptPickerIntent")) {
+                if (m.getParameterTypes().length != 2
+                        || m.getParameterTypes()[0] != android.content.Intent.class
+                        || m.getParameterTypes()[1] != java.util.List.class) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(FeatureKeys.FORBID_FILE_AND_CALENDAR)) {
+                            param.setResult(null);
+                            return;
+                        }
+                        if (!Cfg.bool(FeatureKeys.ENABLE_CUSTOM_FILE_MANAGER)) return;
+                        if (param.args.length < 2 || !(param.args[1] instanceof java.util.List)) {
+                            return;
+                        }
+                        java.util.Set<String> allowed = allowedPickerPackages();
+                        Object match = null;
+                        for (Object ri : (java.util.List<?>) param.args[1]) {
+                            if (allowed.contains(pickerPackageName(ri))) match = ri;
+                        }
+                        if (match != null) param.setResult(match);
+                    }
+                });
+                n++;
+            }
+            log("default-app-policy x" + n, null);
+        } catch (Throwable t) {
+            log("default-app-policy failed", t);
+        }
+    }
+
+    private static java.util.Set<String> allowedPickerPackages() {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (String s : Cfg.str(FeatureKeys.CUSTOM_FILE_MANAGER_PKG).split(",")) {
+            String t = s.trim();
+            if (!t.isEmpty()) out.add(t);
+        }
+        return out;
+    }
+
+    private static String pickerPackageName(Object ri) {
+        try {
+            Object ai = ri.getClass().getField("activityInfo").get(ri);
+            return (String) ai.getClass().getField("packageName").get(ai);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     // ── 应用卸载黑名单（OShin xm0 移植）──
 
     private static void hookUninstallBlacklist(ClassLoader cl) {
@@ -260,6 +322,150 @@ final class FeatureHooksLegacy {
             Object list = lf.get(holder);
             if (list instanceof java.util.Set) ((java.util.Set<?>) list).clear();
         }
+    }
+
+    // ── 安装器/卸载器重定向（OShin d80/c80 移植）──
+
+    private static void hookInstallerRedirect(ClassLoader cl) {
+        try {
+            if (!Cfg.bool(FeatureKeys.ENABLE_INSTALLER_REDIRECT)
+                    && !Cfg.bool(FeatureKeys.ENABLE_UNINSTALLER_REDIRECT)) return;
+            Class<?> c = cl.loadClass("com.android.server.wm.ActivityStarter");
+            Class<?> reqCls = null;
+            for (Class<?> ic : c.getDeclaredClasses()) {
+                if (ic.getSimpleName().equals("Request")) {
+                    reqCls = ic;
+                    break;
+                }
+            }
+            final Field intentF = reqCls != null ? findField(reqCls, "intent") : null;
+            final Class<?> reqType = reqCls;
+            int n = 0;
+            for (Method m : ms(c, "execute")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        Object self = param.thisObject;
+                        Object request = null;
+                        if (param.args.length > 0 && param.args[0] != null && reqType != null
+                                && reqType.isInstance(param.args[0])) {
+                            request = param.args[0];
+                        }
+                        if (request == null && self != null) {
+                            try {
+                                request = fieldValue(self, "mRequest");
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                        if (request == null) return;
+                        Intent intent = readRequestIntent(request, intentF);
+                        if (intent == null) return;
+                        String action = intent.getAction();
+                        if (Intent.ACTION_DELETE.equals(action)
+                                || "android.intent.action.UNINSTALL_PACKAGE".equals(action)) {
+                            if (intent.getData() != null
+                                    && Cfg.bool(FeatureKeys.ENABLE_UNINSTALLER_REDIRECT)) {
+                                String target = Cfg.str(FeatureKeys.UNINSTALLER_TARGET_PACKAGES).trim();
+                                if (!target.isEmpty()) {
+                                    intent.setPackage(target);
+                                    intent.setComponent(null);
+                                }
+                            }
+                            return;
+                        }
+                        boolean redirect;
+                        if (Intent.ACTION_GET_CONTENT.equals(action)
+                                || Intent.ACTION_CHOOSER.equals(action)) {
+                            redirect = false;
+                        } else if ("android.intent.action.INSTALL_PACKAGE".equals(action)) {
+                            redirect = true;
+                        } else {
+                            ComponentName cn = intent.getComponent();
+                            if (cn != null) {
+                                redirect = cn.getClassName().contains("InstallStart")
+                                        && "application/vnd.android.package-archive".equals(intent.getType());
+                            } else {
+                                redirect = "application/vnd.android.package-archive".equals(intent.getType());
+                            }
+                        }
+                        if (!redirect || !Cfg.bool(FeatureKeys.ENABLE_INSTALLER_REDIRECT)) return;
+                        String target = Cfg.str(FeatureKeys.INSTALLER_TARGET_PACKAGES).trim();
+                        if (target.isEmpty()) return;
+                        intent.setPackage(target);
+                        intent.setComponent(null);
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    }
+                });
+                n++;
+            }
+            log("installer-redirect x" + n, null);
+        } catch (Throwable t) {
+            log("installer-redirect failed", t);
+        }
+    }
+
+    private static Intent readRequestIntent(Object request, Field f) {
+        if (f != null) {
+            try {
+                Object v = f.get(request);
+                if (v instanceof Intent) return (Intent) v;
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            Object v = fieldValue(request, "intent");
+            if (v instanceof Intent) return (Intent) v;
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static void hookInstallerActivity(ClassLoader cl) {
+        try {
+            if (!Cfg.bool(FeatureKeys.ENABLE_INSTALLER_REDIRECT)) return;
+            int n = 0;
+            for (Method m : ms(android.app.Activity.class, "onCreate")) {
+                if (m.getParameterTypes().length != 1
+                        || m.getParameterTypes()[0] != android.os.Bundle.class) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            redirectInstallerActivity(param.thisObject);
+                        } catch (Throwable t) {
+                            log("installer-activity redirect failed", t);
+                        }
+                    }
+                });
+                n++;
+            }
+            log("installer-activity x" + n, null);
+        } catch (Throwable t) {
+            log("installer-activity failed", t);
+        }
+    }
+
+    private static void redirectInstallerActivity(Object self) {
+        if (!Cfg.bool(FeatureKeys.ENABLE_INSTALLER_REDIRECT) || !(self instanceof Activity)) return;
+        Activity act = (Activity) self;
+        Intent intent = act.getIntent();
+        if (intent == null) return;
+        Uri uri = intent.getData();
+        if (uri == null) return;
+        String type = intent.getType();
+        String lower = act.getClass().getName().toLowerCase();
+        boolean installerLike = lower.contains("packageinstalleractivity")
+                || lower.contains("installstart")
+                || (type != null && type.contains("application/vnd.android.package-archive"));
+        if (!installerLike || lower.contains("installstart")) return;
+        String target = Cfg.str(FeatureKeys.INSTALLER_TARGET_PACKAGES).trim();
+        if (target.isEmpty() || act.getPackageName().equals(target)) return;
+        Intent redirect = new Intent(Intent.ACTION_VIEW);
+        redirect.setPackage(target);
+        redirect.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        redirect.setDataAndType(uri, type);
+        act.startActivity(redirect);
+        act.finish();
     }
 
     // ── 智慧侧边栏（OShin e02 移植）──
@@ -353,6 +559,7 @@ final class FeatureHooksLegacy {
                 hookBadges(cl);
             } else if (pkg.startsWith("com.android.packageinstaller")) {
                 hookInstaller(cl);
+                hookInstallerActivity(cl);
             } else if (pkg.equals("com.android.settings")) {
                 int n = 0;
                 try {

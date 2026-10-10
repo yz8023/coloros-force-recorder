@@ -47,6 +47,10 @@ public final class FeatureKeys {
     public static final String ALLOW_UNTRUSTED_TOUCH = "allow_untrusted_touch";
     public static final String IGNORE_AUDIO_FOCUS = "ignore_audio_focus";
     public static final String DISABLE_ROOT_CHECK = "disable_root_check";
+    public static final String ENABLE_CUSTOM_FILE_MANAGER = "enable_custom_file_manager";
+    public static final String FORBID_FILE_AND_CALENDAR = "forbid_file_and_calendar";
+    public static final String ENABLE_INSTALLER_REDIRECT = "enable_installer_redirect";
+    public static final String ENABLE_UNINSTALLER_REDIRECT = "enable_uninstaller_redirect";
 
     // ── 核心破解扩充（PMS 签名校验，移植 OShin）──
     public static final String DISABLE_JAR_VERIFIER = "disable_jar_verifier";
@@ -82,6 +86,12 @@ public final class FeatureKeys {
 
     // ── 值类型（非开关）──
     public static final String TILE_SCRIPT = "tile_script_command";
+    public static final String CUSTOM_FILE_MANAGER_PKG = "custom_file_manager_package";
+    public static final String INSTALLER_TARGET_PACKAGES = "installer_target_packages";
+    public static final String UNINSTALLER_TARGET_PACKAGES = "uninstaller_target_packages";
+
+    /** 字符串型 key（Cfg.str 读取 s_ 前缀） */
+    public static final String[] STRING_KEYS = {TILE_SCRIPT, CUSTOM_FILE_MANAGER_PKG, INSTALLER_TARGET_PACKAGES, UNINSTALLER_TARGET_PACKAGES};
 
     /** 门控开关：关闭时所有 hook 放行（沿用 hook_master 机制，导出为 b_ 前缀） */
     public static final String HOOK_MASTER = "hook_master";
@@ -124,6 +134,10 @@ public final class FeatureKeys {
         DEFAULTS.put(ALLOW_UNTRUSTED_TOUCH, Boolean.FALSE);
         DEFAULTS.put(IGNORE_AUDIO_FOCUS, Boolean.FALSE);
         DEFAULTS.put(DISABLE_ROOT_CHECK, Boolean.FALSE);
+        DEFAULTS.put(ENABLE_CUSTOM_FILE_MANAGER, Boolean.FALSE);
+        DEFAULTS.put(FORBID_FILE_AND_CALENDAR, Boolean.FALSE);
+        DEFAULTS.put(ENABLE_INSTALLER_REDIRECT, Boolean.FALSE);
+        DEFAULTS.put(ENABLE_UNINSTALLER_REDIRECT, Boolean.FALSE);
         // 核心破解扩充
         DEFAULTS.put(DISABLE_JAR_VERIFIER, Boolean.FALSE);
         DEFAULTS.put(DISABLE_MESSAGE_DIGEST, Boolean.FALSE);
@@ -151,6 +165,9 @@ public final class FeatureKeys {
         // 智慧侧边栏
         DEFAULTS.put(REMOVE_APP_ADD_LIMIT, Boolean.FALSE);
         DEFAULTS.put(TILE_SCRIPT, "");
+        DEFAULTS.put(CUSTOM_FILE_MANAGER_PKG, "bin.mt.plus");
+        DEFAULTS.put(INSTALLER_TARGET_PACKAGES, "");
+        DEFAULTS.put(UNINSTALLER_TARGET_PACKAGES, "");
         DEFAULTS.put(HOOK_MASTER, Boolean.TRUE);
     }
 
@@ -184,6 +201,10 @@ public final class FeatureKeys {
             {ALLOW_UNTRUSTED_TOUCH, "允许不受信任的触摸事件", "系统服务"},
             {IGNORE_AUDIO_FOCUS, "忽略音频焦点请求", "系统服务"},
             {DISABLE_ROOT_CHECK, "禁用系统 Root 检测", "系统服务"},
+            {ENABLE_CUSTOM_FILE_MANAGER, "文件选择器由自定义文件管理器接管（需重启）", "系统服务"},
+            {FORBID_FILE_AND_CALENDAR, "禁止系统接管文件/日历选择器（需重启）", "系统服务"},
+            {ENABLE_INSTALLER_REDIRECT, "安装器重定向到自定义安装器（需重启）", "系统服务"},
+            {ENABLE_UNINSTALLER_REDIRECT, "卸载器重定向到自定义卸载器（需重启）", "系统服务"},
             // 核心破解扩充
             {DISABLE_INSTALL_VERIFICATION, "禁用安装包验证（需重启）", "核心破解"},
             {DISABLE_JAR_VERIFIER, "禁用 JAR 签名校验（需重启）", "核心破解"},

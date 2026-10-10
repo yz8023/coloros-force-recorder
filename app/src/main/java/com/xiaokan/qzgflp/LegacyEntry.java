@@ -41,18 +41,19 @@ public final class LegacyEntry implements IXposedHookLoadPackage {
                     any = true;
                 }
             }
-            for (String ik : new String[]{FeatureKeys.LAYOUT_ROWS, FeatureKeys.LAYOUT_COLS}) {
+            for (String ik : FeatureKeys.INT_KEYS) {
                 if (p.contains(ik)) {
                     b.putInt("i_" + ik, p.getInt(ik,
                             (Integer) FeatureKeys.defaultValue(ik)));
                     any = true;
                 }
             }
-            if (p.contains(FeatureKeys.TILE_SCRIPT)) {
-                b.putString("s_" + FeatureKeys.TILE_SCRIPT,
-                        p.getString(FeatureKeys.TILE_SCRIPT,
-                                (String) FeatureKeys.defaultValue(FeatureKeys.TILE_SCRIPT)));
-                any = true;
+            for (String sk : FeatureKeys.STRING_KEYS) {
+                if (p.contains(sk)) {
+                    b.putString("s_" + sk, p.getString(sk,
+                            (String) FeatureKeys.defaultValue(sk)));
+                    any = true;
+                }
             }
             return any ? b : null;
         } catch (Throwable t) {

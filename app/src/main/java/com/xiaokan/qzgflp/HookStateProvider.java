@@ -51,8 +51,10 @@ public class HookStateProvider extends ContentProvider {
                         (Integer) FeatureKeys.defaultValue(FeatureKeys.LAYOUT_ROWS)));
                 b.putInt("i_" + FeatureKeys.LAYOUT_COLS, p.getInt(FeatureKeys.LAYOUT_COLS,
                         (Integer) FeatureKeys.defaultValue(FeatureKeys.LAYOUT_COLS)));
-                b.putString("s_" + FeatureKeys.TILE_SCRIPT,
-                        p.getString(FeatureKeys.TILE_SCRIPT, ""));
+                for (String sk : FeatureKeys.STRING_KEYS) {
+                    b.putString("s_" + sk,
+                            p.getString(sk, (String) FeatureKeys.defaultValue(sk)));
+                }
             } catch (Throwable ignored) {
             }
         }
