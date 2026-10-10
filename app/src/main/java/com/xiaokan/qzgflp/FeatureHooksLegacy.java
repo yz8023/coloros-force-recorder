@@ -83,6 +83,13 @@ final class FeatureHooksLegacy {
         hookDowngrade(cl);
         hookVerify(cl);
         hookFeatureConfig(cl);
+        hookPinVerify72h(cl);
+        hookUntrustedTouch(cl);
+        hookIgnoreAudioFocus(cl);
+        hookRootCheck(cl);
+        hookSplitScreen(cl);
+        hookPmsChecks(cl);
+        hookUninstallBlacklist(cl);
     }
 
     private static void hook32Bit(ClassLoader cl) {
@@ -172,9 +179,21 @@ final class FeatureHooksLegacy {
                     XposedBridge.hookMethod(m, new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
-                            if (Cfg.bool(FeatureKeys.DISABLE_VERIFY)
-                                    && Boolean.FALSE.equals(param.getResult())) {
+                            if (!Boolean.FALSE.equals(param.getResult())) return;
+                            if (Cfg.bool(FeatureKeys.DISABLE_VERIFY)) {
                                 param.setResult(Boolean.TRUE);
+                                return;
+                            }
+                            if (Cfg.bool(FeatureKeys.ALLOW_SIG_MISMATCH_UPDATE)) {
+                                try {
+                                    Object pkgArg = param.args.length > 0 ? param.args[0] : null;
+                                    Object parsed = param.args.length > 1 ? param.args[1] : null;
+                                    if (pkgArg != null && parsed != null) {
+                                        Object name = XposedHelpers.callMethod(parsed, "getPackageName");
+                                        if (pkgArg.equals(name)) param.setResult(Boolean.TRUE);
+                                    }
+                                } catch (Throwable ignored) {
+                                }
                             }
                         }
                     });
@@ -200,8 +219,134 @@ final class FeatureHooksLegacy {
         }
     }
 
+    // ── 应用卸载黑名单（OShin xm0 移植）──
+
+    private static void hookUninstallBlacklist(ClassLoader cl) {
+        try {
+            Class<?> c = cl.loadClass("com.android.server.pm.OplusUninstallableConfigManager");
+            int n = 0;
+            for (Method m : ms(c, "loadUninstallableConfig")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!Cfg.bool(FeatureKeys.REMOVE_APP_UNINSTALL_BLACKLIST)) return;
+                        try {
+                            clearUninstallSets(param.thisObject);
+                        } catch (Throwable t) {
+                            log("uninstall-blacklist clear failed", t);
+                        }
+                    }
+                });
+                n++;
+            }
+            if (n > 0) log("uninstall-blacklist x" + n, null);
+        } catch (ClassNotFoundException e) {
+            // 当前进程无该类
+        } catch (Throwable t) {
+            log("uninstall-blacklist hook failed", t);
+        }
+    }
+
+    private static void clearUninstallSets(Object self) throws Exception {
+        if (self == null) return;
+        Class<?> cls = self.getClass();
+        for (String fn : new String[]{"mHideUninstallIcon", "mHideUninstallIconSoft"}) {
+            Field f = findField(cls, fn);
+            if (f == null) continue;
+            Object holder = f.get(self);
+            if (holder == null) continue;
+            Field lf = findField(holder.getClass(), "mList");
+            if (lf == null) continue;
+            Object list = lf.get(holder);
+            if (list instanceof java.util.Set) ((java.util.Set<?>) list).clear();
+        }
+    }
+
+    // ── 智慧侧边栏（OShin e02 移植）──
+
+    private static void hookSmartSidebar(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> upv = cl.loadClass(
+                    "com.oplus.smartsidebar.panelview.edgepanel.mainpanel.UserPanelView");
+            if (Cfg.bool(FeatureKeys.REMOVE_APP_ADD_LIMIT)) {
+                Field maxEntry = findField(upv, "MAX_USER_ENTRY");
+                if (maxEntry != null) {
+                    setStaticInt(upv, maxEntry, 999);
+                    n++;
+                }
+            }
+            n += repCanAdd(upv);
+            for (Method m : ms(upv, "performAdd")) {
+                if (m.getParameterTypes().length != 1
+                        || !m.getParameterTypes()[0].getName().endsWith("AppLabelData")) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (!Cfg.bool(FeatureKeys.REMOVE_APP_ADD_LIMIT)) return;
+                        try {
+                            Object self = param.thisObject;
+                            if (self != null) {
+                                Object list = fieldValue(self, "mPanelData");
+                                Object item = fieldValue(self, "mEditOccupancyData");
+                                if (list instanceof java.util.List && item != null) {
+                                    ((java.util.List<Object>) list).add(item);
+                                }
+                            }
+                        } catch (Throwable t) {
+                            log("sidebar performAdd failed", t);
+                        }
+                    }
+                });
+                n++;
+            }
+        } catch (Throwable t) {
+            log("smartsidebar hook failed", t);
+        }
+        try {
+            Class<?> pmv = cl.loadClass("com.oplus.smartsidebar.panelview.edgepanel.PanelMainView");
+            n += repCanAdd(pmv);
+        } catch (Throwable ignored) {
+        }
+        log("smartsidebar x" + n, null);
+    }
+
+    private static int repCanAdd(Class<?> c) {
+        int n = 0;
+        for (Method m : ms(c, "canAdd")) {
+            if (m.getParameterTypes().length != 1
+                    || m.getParameterTypes()[0] != String.class
+                    || m.getReturnType() != boolean.class) continue;
+            XposedBridge.hookMethod(m, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (Cfg.bool(FeatureKeys.REMOVE_APP_ADD_LIMIT)) param.setResult(Boolean.TRUE);
+                }
+            });
+            n++;
+        }
+        return n;
+    }
+
+    private static Object fieldValue(Object self, String name) throws Exception {
+        Field f = findField(self.getClass(), name);
+        return f == null ? null : f.get(self);
+    }
+
+    private static void setStaticInt(Class<?> owner, Field f, int v) throws Exception {
+        try {
+            f.setInt(null, v);
+        } catch (IllegalAccessException e) {
+            Field uf = findField(sun.misc.Unsafe.class, "theUnsafe");
+            if (uf == null) throw e;
+            sun.misc.Unsafe u = (sun.misc.Unsafe) uf.get(null);
+            u.putInt(owner, u.staticFieldOffset(f), v);
+        }
+    }
+
     static void onPackage(String pkg, ClassLoader cl) {
         try {
+            hookUninstallBlacklist(cl);
             if (pkg.startsWith("com.android.launcher")) {
                 hookFolderBg(cl);
                 hookLauncherLayout(cl);
@@ -232,10 +377,765 @@ final class FeatureHooksLegacy {
                 hookPermissionUnlock(cl);
             } else if (pkg.equals("com.oplus.eyeprotect")) {
                 hookFeatureConfig(cl);
+            } else if (pkg.equals("com.coloros.ocrscanner")) {
+                hookFullScreenTranslation(cl);
+            } else if (pkg.equals("com.heytap.themestore")) {
+                hookThemeStore(cl);
+            } else if (pkg.equals("com.coloros.smartsidebar")) {
+                hookSmartSidebar(cl);
             }
         } catch (Throwable t) {
             log("multi-features failed in " + pkg, t);
         }
+    }
+
+    // ── 系统服务（OShin 移植，legacy 镜像）──
+
+    private static void hookPinVerify72h(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> c = cl.loadClass(
+                    "com.android.server.locksettings.LockSettingsStrongAuth");
+            for (Method m : ms(c, "rescheduleStrongAuthTimeoutAlarm")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(FeatureKeys.DISABLE_PIN_72H)) param.setResult(null);
+                    }
+                });
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        log("pin-72h x" + n, null);
+    }
+
+    private static void hookUntrustedTouch(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> c = cl.loadClass("com.android.server.wm.WindowState");
+            for (Method m : ms(c, "getTouchOcclusionMode")) {
+                if (m.getParameterTypes().length != 0
+                        || m.getReturnType() != int.class) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(FeatureKeys.ALLOW_UNTRUSTED_TOUCH)) {
+                            param.setResult(2);
+                        }
+                    }
+                });
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        log("untrusted-touch x" + n, null);
+    }
+
+    private static void hookIgnoreAudioFocus(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> c = cl.loadClass("com.android.server.audio.MediaFocusControl");
+            for (Method m : c.getDeclaredMethods()) {
+                if (!"requestAudioFocus".equals(m.getName())) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (!Cfg.bool(FeatureKeys.IGNORE_AUDIO_FOCUS)) return;
+                        if (param.args.length > 0
+                                && param.args[0] instanceof android.media.AudioAttributes) {
+                            int usage = ((android.media.AudioAttributes) param.args[0]).getUsage();
+                            boolean allowed = usage == android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION
+                                    || usage == android.media.AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY
+                                    || usage == android.media.AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE;
+                            if (!allowed) {
+                                param.setResult(android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
+                            }
+                        }
+                    }
+                });
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        log("ignore-audio-focus x" + n, null);
+    }
+
+    private static void hookRootCheck(ClassLoader cl) {
+        int n = repVal(cl, "com.android.server.oplus.heimdall.HeimdallService",
+                FeatureKeys.DISABLE_ROOT_CHECK, Boolean.FALSE, "isRootEnable");
+        log("root-check x" + n, null);
+    }
+
+    private static void hookSplitScreen(ClassLoader cl) {
+        try {
+            Class<?> fwu = cl.loadClass("com.android.server.wm.FlexibleWindowUtils");
+            final String rk = FeatureKeys.REMOVE_SMALL_WIN_RESTRICT;
+            int n = 0;
+            n += repVal(cl, "com.android.server.wm.FlexibleWindowUtils", rk,
+                    Boolean.TRUE, "isUnSupportCallerFlexibleWindow");
+            n += repVal(cl, "com.android.server.wm.FlexibleWindowUtils", rk,
+                    Boolean.TRUE, "isSupportFlexibleWindow");
+            n += repVal(cl, "com.android.server.wm.FlexibleWindowUtils", rk,
+                    Boolean.FALSE, "isInFlexibleWindowBlackList");
+            n += repVal(cl, "com.android.server.wm.FlexibleWindowUtils", rk,
+                    Boolean.FALSE, "isInMultiWindowFlexibleBlackList");
+            n += repVal(cl, "com.android.server.wm.FlexibleWindowUtils", rk,
+                    Boolean.FALSE, "isFlexibleTaskInPSBlackList");
+            for (Method m : ms(fwu, "getUnSupportRatiosInFlexibleTask")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(rk)) param.setResult("");
+                    }
+                });
+                n++;
+            }
+            log("small-window x" + n, null);
+        } catch (Throwable t) {
+            log("small-window failed", t);
+        }
+        try {
+            Class<?> fwm = cl.loadClass("com.android.server.wm.FlexibleWindowManagerService");
+            int n = 0;
+            for (Method m : fwm.getDeclaredMethods()) {
+                Class<?>[] ps = m.getParameterTypes();
+                if (ps.length != 1 || m.getReturnType() != int.class) continue;
+                String name = m.getName();
+                String key;
+                if ("getMaxWinNum".equals(name)) key = FeatureKeys.MAX_SMALL_WINDOWS;
+                else if ("getCornerRadius".equals(name)) key = FeatureKeys.SMALL_WIN_CORNER_RADIUS;
+                else if ("getShadowRadiusFocused".equals(name)) key = FeatureKeys.SMALL_WIN_FOCUSED_SHADOW;
+                else if ("getShadowRadiusUnfocused".equals(name)) key = FeatureKeys.SMALL_WIN_UNFOCUSED_SHADOW;
+                else continue;
+                final String k = key;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        int v = Cfg.intv(k);
+                        if (v != -1) param.setResult(v);
+                    }
+                });
+                n++;
+            }
+            n += repVal(cl, "com.android.server.wm.FlexibleWindowManagerService",
+                    FeatureKeys.FORCE_MULTI_WINDOW_MODE, Boolean.TRUE, "isSupportMultiMode");
+            log("small-window-svc x" + n, null);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    // ── 核心破解扩充（legacy 镜像）──
+
+    private static void hookPmsChecks(ClassLoader cl) {
+        try {
+            Class<?> u = cl.loadClass("com.android.server.pm.PackageManagerServiceUtils");
+            int n = 0;
+            for (Method m : ms(u, "checkDowngrade")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(FeatureKeys.ALLOW_DOWNGRADE)) param.setResult(null);
+                    }
+                });
+                n++;
+            }
+            if (n > 0) log("downgrade-utils x" + n, null);
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> sjv = cl.loadClass("android.util.jar.StrictJarVerifier");
+            final String k = FeatureKeys.DISABLE_JAR_VERIFIER;
+            int n = 0;
+            for (Method m : ms(sjv, "verifyMessageDigest", "verify")) {
+                if (m.getReturnType() != boolean.class) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(k)) param.setResult(Boolean.TRUE);
+                    }
+                });
+                n++;
+            }
+            for (java.lang.reflect.Constructor<?> ctor : sjv.getDeclaredConstructors()) {
+                XposedBridge.hookMethod(ctor, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!Cfg.bool(k)) return;
+                        try {
+                            Field f = findField(sjv, "signatureSchemeRollbackProtectionsEnforced");
+                            if (f != null) f.setBoolean(param.thisObject, false);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                });
+            }
+            if (n > 0) log("jar-verifier x" + n, null);
+        } catch (Throwable t) {
+            log("jar-verifier failed", t);
+        }
+        try {
+            Class<?> md = Class.forName("java.security.MessageDigest");
+            for (Method m : ms(md, "isEqual")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(FeatureKeys.DISABLE_MESSAGE_DIGEST)) {
+                            param.setResult(Boolean.TRUE);
+                        }
+                    }
+                });
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> am = Class.forName("android.content.res.AssetManager");
+            for (Method m : ms(am, "containsAllocatedTable")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(FeatureKeys.BYPASS_ARSC_CHECK)) {
+                            param.setResult(Boolean.FALSE);
+                        }
+                    }
+                });
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> asv = cl.loadClass("android.util.apk.ApkSignatureVerifier");
+            int n = 0;
+            for (Method m : ms(asv, "getMinimumSignatureSchemeVersionForTargetSdk")) {
+                if (m.getParameterTypes().length != 1
+                        || m.getReturnType() != int.class) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(FeatureKeys.BYPASS_MIN_SIG_VERSION)) param.setResult(0);
+                    }
+                });
+                n++;
+            }
+            Class<?> spu = cl.loadClass("com.android.server.pm.ScanPackageUtils");
+            for (Method m : ms(spu, "assertMinSignatureSchemeIsValid")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(FeatureKeys.BYPASS_MIN_SIG_VERSION)
+                                && param.throwable != null) {
+                            param.setThrowable(null);
+                        }
+                    }
+                });
+                n++;
+            }
+            if (n > 0) log("min-sig-version x" + n, null);
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> sd = cl.loadClass("android.content.pm.SigningDetails");
+            int n = 0;
+            for (Method m : ms(sd, "checkCapability")) {
+                if (m.getParameterTypes().length != 2) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (!Cfg.bool(FeatureKeys.ALLOW_SIG_MISMATCH_UPDATE)) return;
+                        if (param.args.length >= 2 && param.args[1] instanceof Integer) {
+                            int cap = (Integer) param.args[1];
+                            if (cap != 4 && cap != 16) param.setResult(Boolean.TRUE);
+                        }
+                    }
+                });
+                n++;
+            }
+            Class<?> ksm = cl.loadClass("com.android.server.pm.KeySetManagerService");
+            for (Method m : ms(ksm, "shouldCheckUpgradeKeySetLocked")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!Cfg.bool(FeatureKeys.ALLOW_SIG_MISMATCH_UPDATE)) return;
+                        boolean fromPrepare = false;
+                        for (StackTraceElement e : Thread.currentThread().getStackTrace()) {
+                            if (e.getMethodName().startsWith("preparePackage")) {
+                                fromPrepare = true;
+                                break;
+                            }
+                        }
+                        KS_BYPASS_KEYSET.set(fromPrepare);
+                        if (fromPrepare) param.setResult(Boolean.TRUE);
+                    }
+                });
+                n++;
+            }
+            for (Method m : ms(ksm, "checkUpgradeKeySetLocked")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(FeatureKeys.ALLOW_SIG_MISMATCH_UPDATE)
+                                && Boolean.TRUE.equals(KS_BYPASS_KEYSET.get())) {
+                            param.setResult(Boolean.TRUE);
+                        }
+                    }
+                });
+                n++;
+            }
+            if (n > 0) log("sig-mismatch-update x" + n, null);
+        } catch (Throwable ignored) {
+        }
+        try {
+            int n = repVal(cl, "android.content.pm.SigningDetails",
+                    FeatureKeys.ALLOW_SPLIT_SIG_MISMATCH, Boolean.TRUE, "signaturesMatchExactly");
+            if (n > 0) log("split-sig x" + n, null);
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> ai = android.content.pm.ApplicationInfo.class;
+            int n = 0;
+            for (Method m : ms(ai, "isPackageWhitelistedForHiddenApis")) {
+                if (m.getReturnType() != boolean.class) continue;
+                final boolean isStatic = java.lang.reflect.Modifier.isStatic(m.getModifiers());
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (!Cfg.bool(FeatureKeys.ALLOW_HIDDEN_API)) return;
+                        Object info = isStatic ? null : param.thisObject;
+                        if (info instanceof android.content.pm.ApplicationInfo) {
+                            int flags = ((android.content.pm.ApplicationInfo) info).flags;
+                            if ((flags & 1) != 0 || (flags & 128) != 0) {
+                                param.setResult(Boolean.TRUE);
+                            }
+                        }
+                    }
+                });
+                n++;
+            }
+            if (n > 0) log("hidden-api x" + n, null);
+        } catch (Throwable ignored) {
+        }
+        if (Cfg.bool(FeatureKeys.ALLOW_NONSYSTEM_SHARED_UID)) {
+            try {
+                Class<?> rpu = cl.loadClass("com.android.server.pm.ReconcilePackageUtils");
+                Field f = findField(rpu, "ALLOW_NON_PRELOADS_SYSTEM_SHAREDUIDS");
+                if (f != null && f.getType() == boolean.class) {
+                    f.setAccessible(true);
+                    f.setBoolean(null, true);
+                    log("shared-uid x1", null);
+                }
+            } catch (Throwable t) {
+                log("shared-uid failed", t);
+            }
+        }
+        try {
+            Class<?> vs = cl.loadClass("com.android.server.pm.VerifyingSession");
+            int n = 0;
+            for (Method m : ms(vs, "isVerificationEnabled")) {
+                if (m.getReturnType() != boolean.class) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (Cfg.bool(FeatureKeys.DISABLE_INSTALL_VERIFICATION)
+                                || Cfg.bool(FeatureKeys.DISABLE_VERIFY)) {
+                            param.setResult(Boolean.FALSE);
+                        }
+                    }
+                });
+                n++;
+            }
+            if (n > 0) log("install-verification x" + n, null);
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> asv = cl.loadClass("android.util.apk.ApkSignatureVerifier");
+            Class<?> ppe = null;
+            try {
+                ppe = cl.loadClass("android.content.pm.PackageParser$PackageParserException");
+            } catch (Throwable ignored) {
+            }
+            final Class<?> ppeClass = ppe;
+            final Field errField = ppe != null ? findField(ppe, "error") : null;
+            int n = 0;
+            for (Method m : ms(asv, "verifyV1Signature")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.throwable == null) return;
+                        if (!Cfg.bool(FeatureKeys.BYPASS_V1_SIG_ERRORS)) return;
+                        Throwable cur = param.throwable;
+                        boolean v1err = false;
+                        for (int i = 0; i < 3 && cur != null; i++) {
+                            if (ppeClass != null && cur.getClass() == ppeClass
+                                    && errField != null) {
+                                try {
+                                    if (errField.getInt(cur) == -103) v1err = true;
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                            if (v1err) break;
+                            cur = cur.getCause();
+                        }
+                        if (!v1err) return;
+                        Object sd = newSigningDetailsV1(cl);
+                        if (sd != null) {
+                            param.setThrowable(null);
+                            param.setResult(sd);
+                        }
+                    }
+                });
+                n++;
+            }
+            if (n > 0) log("v1-sig-errors x" + n, null);
+        } catch (Throwable t) {
+            log("v1-sig-errors failed", t);
+        }
+        hookPmsCommand(cl);
+    }
+
+    private static final java.util.concurrent.atomic.AtomicReference<Object> PMS_INSTANCE =
+            new java.util.concurrent.atomic.AtomicReference<>();
+    private static final ThreadLocal<Boolean> KS_BYPASS_KEYSET = new ThreadLocal<>();
+
+    private static Object newSigningDetailsV1(ClassLoader cl) {
+        try {
+            Class<?> sigC = cl.loadClass("android.content.pm.Signature");
+            Object sig = sigC.getConstructor(String.class).newInstance(MultiFeatures.COREPATCH_CERT);
+            Object sigArr = java.lang.reflect.Array.newInstance(sigC, 1);
+            java.lang.reflect.Array.set(sigArr, 0, sig);
+            Class<?> sd = cl.loadClass("android.content.pm.SigningDetails");
+            for (java.lang.reflect.Constructor<?> c : sd.getDeclaredConstructors()) {
+                Class<?>[] ps = c.getParameterTypes();
+                if (ps.length == 2 && ps[0].isArray() && ps[1] == int.class) {
+                    c.setAccessible(true);
+                    return c.newInstance(sigArr, 1);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static void hookPmsCommand(ClassLoader cl) {
+        if (!Cfg.bool(FeatureKeys.PMS_COMMAND)) return;
+        try {
+            Class<?> pms = cl.loadClass("com.android.server.pm.PackageManagerService");
+            for (java.lang.reflect.Constructor<?> ctor : pms.getDeclaredConstructors()) {
+                XposedBridge.hookMethod(ctor, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        PMS_INSTANCE.set(param.thisObject);
+                    }
+                });
+            }
+            Class<?> pmsc = cl.loadClass("com.android.server.pm.PackageManagerShellCommand");
+            for (Method m : ms(pmsc, "onCommand")) {
+                if (m.getParameterTypes().length != 1) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        Object cmd = param.args.length > 0 ? param.args[0] : null;
+                        if (!"pms".equals(cmd)) return;
+                        Object localPms = PMS_INSTANCE.get();
+                        if (localPms == null) {
+                            param.setResult(0);
+                            return;
+                        }
+                        Object shell = param.thisObject;
+                        try {
+                            Object pw = XposedHelpers.callMethod(shell, "getOutPrintWriter");
+                            String type = (String) XposedHelpers.callMethod(shell, "getNextArgRequired");
+                            Object settings = XposedHelpers.getObjectField(localPms, "mSettings");
+                            if ("p".equals(type) || "package".equals(type)) {
+                                String name = (String) XposedHelpers.callMethod(shell, "getNextArgRequired");
+                                Object ps = XposedHelpers.callMethod(settings, "getPackageLPr", name);
+                                if (ps != null) dumpSettingSignatures(ps, pw);
+                                else XposedHelpers.callMethod(pw, "println", "no package " + name + " found");
+                            } else if ("su".equals(type) || "shareduser".equals(type)) {
+                                String name = (String) XposedHelpers.callMethod(shell, "getNextArgRequired");
+                                Object su = XposedHelpers.getObjectField(settings, "mSharedUsers");
+                                Object target = su instanceof java.util.Map
+                                        ? ((java.util.Map<?, ?>) su).get(name) : null;
+                                if (target != null) dumpSettingSignatures(target, pw);
+                                else XposedHelpers.callMethod(pw, "println", "no shared user " + name + " found");
+                            } else {
+                                XposedHelpers.callMethod(pw, "println", "usage: <p|package|su|shareduser> <name>");
+                            }
+                        } catch (Throwable t) {
+                            log("pms command failed", t);
+                        }
+                        param.setResult(0);
+                    }
+                });
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void dumpSettingSignatures(Object setting, Object pw) {
+        try {
+            Object signingDetails = XposedHelpers.getObjectField(setting, "signatures");
+            if (signingDetails != null) {
+                signingDetails = XposedHelpers.getObjectField(signingDetails, "mSigningDetails");
+            }
+            XposedHelpers.callMethod(pw, "println", "signing for " + setting);
+            if (signingDetails == null) return;
+            Object[] sigs = (Object[]) XposedHelpers.callMethod(signingDetails, "getSignatures");
+            if (sigs == null) {
+                XposedHelpers.callMethod(pw, "println", "Could not get signatures.");
+                return;
+            }
+            for (int i = 0; i < sigs.length; i++) {
+                XposedHelpers.callMethod(pw, "println", (i + 1) + ": "
+                        + XposedHelpers.callMethod(sigs[i], "toCharsString"));
+            }
+        } catch (Throwable t) {
+            XposedHelpers.callMethod(pw, "println", "dump failed: " + t);
+        }
+    }
+
+    // ── 小布扫一扫 / 主题商店（legacy 镜像）──
+
+    private static void hookFullScreenTranslation(ClassLoader cl) {
+        if (!Cfg.bool(FeatureKeys.FULL_SCREEN_TRANSLATION)) return;
+        int n = 0;
+        try {
+            Class<?> root = cl.loadClass(
+                    "com.oplus.scanner.screentrans.ui.ScreenTranslationRootView");
+            for (Method m : root.getDeclaredMethods()) {
+                if (!"s0".equals(m.getName()) || m.getParameterTypes().length != 1
+                        || m.getReturnType() != boolean.class) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        param.setResult(Boolean.FALSE);
+                    }
+                });
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> inner = cl.loadClass(
+                    "com.oplus.scanner.screentrans.ui.ScreenTranslationRootView$onNotSupportApp$1");
+            for (Method m : inner.getDeclaredMethods()) {
+                if (!"invokeSuspend".equals(m.getName())
+                        || m.getParameterTypes().length != 1) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        param.setResult(Boolean.FALSE);
+                    }
+                });
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> cap = cl.loadClass(
+                    "com.oplus.scanner.screentrans.ui.ScreenTranslationToolCapsule");
+            for (Method m : cap.getDeclaredMethods()) {
+                if (m.getParameterTypes().length != 0
+                        || m.getReturnType() != boolean.class) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        param.setResult(Boolean.TRUE);
+                    }
+                });
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        log("full-screen-translation x" + n, null);
+    }
+
+    private static void hookThemeStore(ClassLoader cl) {
+        if (Cfg.bool(FeatureKeys.THEME_UNLOCK_VIP)) hookThemeVip(cl);
+        if (Cfg.bool(FeatureKeys.THEME_REMOVE_SPLASH_ADS)) hookThemeSplashAds(cl);
+        if (Cfg.bool(FeatureKeys.THEME_REMOVE_UPGRADE)) hookThemeUpgrade(cl);
+    }
+
+    private static void hookThemeVip(ClassLoader cl) {
+        try {
+            Class<?> wpr = cl.loadClass("com.oppo.cdo.card.theme.dto.page.WeatherPageResponseDto");
+            for (Method m : ms(wpr, "getVipStatus")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            XposedHelpers.setIntField(param.thisObject, "vipStatus", 1);
+                        } catch (Throwable ignored) {
+                        }
+                        param.setResult(1);
+                    }
+                });
+            }
+            Class<?> vud = cl.loadClass("com.oppo.cdo.card.theme.dto.vip.VipUserDto");
+            for (Method m : ms(vud, "getVipStatus", "getVipDays")) {
+                final boolean status = "getVipStatus".equals(m.getName());
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            XposedHelpers.setIntField(param.thisObject, "vipStatus", 1);
+                            XposedHelpers.setIntField(param.thisObject, "vipDays", 99999);
+                            XposedHelpers.setLongField(param.thisObject, "endTime", 999999999L);
+                        } catch (Throwable ignored) {
+                        }
+                        param.setResult(status ? (Object) 1 : (Object) 99999);
+                    }
+                });
+            }
+            Class<?> rid = cl.loadClass("com.oppo.cdo.theme.domain.dto.response.ResourceItemDto");
+            for (Method m : ms(rid, "getIsVip", "getIsVipAvailable")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            XposedHelpers.setIntField(param.thisObject, "isVip", 1);
+                            XposedHelpers.setIntField(param.thisObject, "isVipAvailable", 1);
+                        } catch (Throwable ignored) {
+                        }
+                        param.setResult(1);
+                    }
+                });
+            }
+            log("theme-vip-dto x1", null);
+        } catch (Throwable t) {
+            log("theme-vip-dto failed", t);
+        }
+        try {
+            Class<?> uim = cl.loadClass("com.nearme.themespace.UserInfoManager");
+            for (Method m : uim.getDeclaredMethods()) {
+                if ("w".equals(m.getName()) && m.getParameterTypes().length == 0) {
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            param.setResult(1);
+                        }
+                    });
+                } else if ("D".equals(m.getName()) && m.getParameterTypes().length == 0) {
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                Class<?> vs = cl.loadClass("com.nearme.themespace.account.VipUserStatus");
+                                param.setResult(XposedHelpers.getStaticObjectField(vs, "VALID"));
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+                }
+            }
+            log("theme-vip-user x1", null);
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> dr = cl.loadClass("com.nearme.themespace.download.mvvm.DownloadRepository");
+            for (Method m : dr.getDeclaredMethods()) {
+                Class<?>[] ps = m.getParameterTypes();
+                if (ps.length != 1 || !ps[0].getName().contains("LocalProductInfo")) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        Object info = param.args.length > 0 ? param.args[0] : null;
+                        if (info == null) return;
+                        try {
+                            XposedHelpers.setIntField(info, "mPurchaseStatus", 1);
+                            XposedHelpers.setIntField(info, "mResourceVipType", 0);
+                            XposedHelpers.setIntField(info, "forceVip", 0);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                });
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> ter = cl.loadClass("com.nearme.themespace.trial.ThemeTrialExpireReceiver");
+            for (Method m : ms(ter, "onReceive")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args.length > 1 && param.args[1] instanceof android.content.Intent) {
+                            ((android.content.Intent) param.args[1]).setAction("");
+                        }
+                    }
+                });
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            int n = 0;
+            for (Method m : DexLocator.findGlobal(cl, c ->
+                    "getPrice".equals(c.name) && c.paramCount == 0
+                            && "D".equals(c.returnType))) {
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        param.setResult(0.0d);
+                    }
+                });
+                n++;
+            }
+            log("theme-vip-price x" + n, null);
+        } catch (Throwable t) {
+            log("theme-vip-price failed", t);
+        }
+    }
+
+    private static void hookThemeSplashAds(ClassLoader cl) {
+        try {
+            Class<?> sd = cl.loadClass("com.oppo.cdo.card.theme.dto.SplashDto");
+            int n = 0;
+            for (Method m : ms(sd, "getAdData", "getImage")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        param.setResult(null);
+                    }
+                });
+                n++;
+            }
+            for (Method m : ms(sd, "getStartTime")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        param.setResult(System.currentTimeMillis() + 86400000L);
+                    }
+                });
+                n++;
+            }
+            for (Method m : ms(sd, "getEndTime")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        param.setResult(System.currentTimeMillis() - 86400000L);
+                    }
+                });
+                n++;
+            }
+            log("theme-splash-ads x" + n, null);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void hookThemeUpgrade(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> us = cl.loadClass("com.heytap.upgrade.UpgradeSDK");
+            for (Method m : ms(us, "checkUpgrade")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        param.setResult(null);
+                    }
+                });
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        log("theme-upgrade x" + n, null);
     }
 
     private static void hookFolderBg(ClassLoader cl) {

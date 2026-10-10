@@ -12,5 +12,11 @@
         <item>com.oplus.eyeprotect</item>
         <item>com.flyme.systemuiex</item>
         <item>com.miui.screenshot</item>
+        <item>com.coloros.ocrscanner</item>
+        <item>com.heytap.themestore</item>
+        <item>com.oplus.safecenter</item>
+        <item>com.coloros.securityguard</item>
+        <item>com.android.documentsui</item>
+        <item>com.coloros.smartsidebar</item>
     </array>
 </resources>

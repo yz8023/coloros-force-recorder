@@ -100,6 +100,13 @@ final class MultiFeatures {
         hookDowngrade(cl);
         hookVerify(cl);
         hookFeatureConfig(cl, null);
+        hookPinVerify72h(cl);
+        hookUntrustedTouch(cl);
+        hookIgnoreAudioFocus(cl);
+        hookRootCheck(cl);
+        hookSplitScreen(cl);
+        hookPmsChecks(cl);
+        hookUninstallBlacklist(cl);
     }
 
     private void hook32Bit(ClassLoader cl) {
@@ -183,8 +190,22 @@ final class MultiFeatures {
                     if (m.getReturnType() != boolean.class) continue;
                     module.hook(m).intercept(chain -> {
                         Object r = chain.proceed();
-                        if (Cfg.bool(FeatureKeys.DISABLE_VERIFY)
-                                && Boolean.FALSE.equals(r)) return Boolean.TRUE;
+                        if (Boolean.FALSE.equals(r)) {
+                            if (Cfg.bool(FeatureKeys.DISABLE_VERIFY)) return Boolean.TRUE;
+                            if (Cfg.bool(FeatureKeys.ALLOW_SIG_MISMATCH_UPDATE)) {
+                                try {
+                                    java.util.List<Object> args = chain.getArgs();
+                                    Object pkgArg = args.size() > 0 ? args.get(0) : null;
+                                    Object parsed = args.size() > 1 ? args.get(1) : null;
+                                    if (pkgArg != null && parsed != null) {
+                                        Method gp = parsed.getClass().getMethod("getPackageName");
+                                        Object name = gp.invoke(parsed);
+                                        if (pkgArg.equals(name)) return Boolean.TRUE;
+                                    }
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                        }
                         return r;
                     });
                     n++;
@@ -217,10 +238,58 @@ final class MultiFeatures {
         }
     }
 
+    // ── 应用卸载黑名单（OShin xm0 移植）──
+
+    /**
+     * 清空 OplusUninstallableConfigManager 的卸载图标隐藏名单（mHideUninstallIcon /
+     * mHideUninstallIconSoft 各自内层 mList ArraySet）。类存在于多个 ColorOS 进程，
+     * 故每个作用域进程都尝试挂载，缺类时静默跳过（与 OShin 全进程加载行为一致）。
+     */
+    private void hookUninstallBlacklist(ClassLoader cl) {
+        try {
+            Class<?> c = cl.loadClass("com.android.server.pm.OplusUninstallableConfigManager");
+            int n = 0;
+            for (Method m : ms(c, "loadUninstallableConfig")) {
+                module.hook(m).intercept(chain -> {
+                    if (!Cfg.bool(FeatureKeys.REMOVE_APP_UNINSTALL_BLACKLIST)) return chain.proceed();
+                    Object res = chain.proceed();
+                    try {
+                        clearUninstallSets(chain.getThisObject());
+                    } catch (Throwable t) {
+                        module.log(Log.WARN, TAG, "uninstall-blacklist clear failed", t);
+                    }
+                    return res;
+                });
+                n++;
+            }
+            if (n > 0) logOk("uninstall-blacklist", n);
+        } catch (ClassNotFoundException e) {
+            // 当前进程无该类
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "uninstall-blacklist hook failed", t);
+        }
+    }
+
+    private static void clearUninstallSets(Object self) throws Exception {
+        if (self == null) return;
+        Class<?> cls = self.getClass();
+        for (String fn : new String[]{"mHideUninstallIcon", "mHideUninstallIconSoft"}) {
+            Field f = findField(cls, fn);
+            if (f == null) continue;
+            Object holder = f.get(self);
+            if (holder == null) continue;
+            Field lf = findField(holder.getClass(), "mList");
+            if (lf == null) continue;
+            Object list = lf.get(holder);
+            if (list instanceof java.util.Set) ((java.util.Set<?>) list).clear();
+        }
+    }
+
     // ── 应用内分发 ──
 
     void onPackage(String pkg, ClassLoader cl) {
         try {
+            hookUninstallBlacklist(cl);
             if (pkg.startsWith("com.android.launcher")) {
                 hookFolderBg(cl);
                 hookLauncherLayout(cl);
@@ -250,9 +319,818 @@ final class MultiFeatures {
                 hookPermissionUnlock(cl);
             } else if (pkg.equals("com.oplus.eyeprotect")) {
                 hookFeatureConfig(cl, null);
+            } else if (pkg.equals("com.coloros.ocrscanner")) {
+                hookFullScreenTranslation(cl);
+            } else if (pkg.equals("com.heytap.themestore")) {
+                hookThemeStore(cl);
+            } else if (pkg.equals("com.coloros.smartsidebar")) {
+                hookSmartSidebar(cl);
             }
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "multi-features failed in " + pkg, t);
+        }
+    }
+
+    // ── 系统服务（OShin 移植）──
+
+    /** 移除 72 小时强验证重排闹钟：rescheduleStrongAuthTimeoutAlarm 置空 */
+    private void hookPinVerify72h(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> c = cl.loadClass(
+                    "com.android.server.locksettings.LockSettingsStrongAuth");
+            for (Method m : ms(c, "rescheduleStrongAuthTimeoutAlarm")) {
+                module.hook(m).intercept(chain ->
+                        Cfg.bool(FeatureKeys.DISABLE_PIN_72H) ? null : chain.proceed());
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        logOk("pin-72h", n);
+    }
+
+    /** 允许不受信任的触摸：getTouchOcclusionMode 恒返回 2 */
+    private void hookUntrustedTouch(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> c = cl.loadClass("com.android.server.wm.WindowState");
+            for (Method m : ms(c, "getTouchOcclusionMode")) {
+                if (m.getParameterCount() != 0 || m.getReturnType() != int.class) continue;
+                module.hook(m).intercept(chain ->
+                        Cfg.bool(FeatureKeys.ALLOW_UNTRUSTED_TOUCH) ? 2 : chain.proceed());
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        logOk("untrusted-touch", n);
+    }
+
+    /** 忽略音频焦点：非通话/无障碍/导航用法直接返回已获得焦点 */
+    private void hookIgnoreAudioFocus(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> c = cl.loadClass("com.android.server.audio.MediaFocusControl");
+            for (Method m : c.getDeclaredMethods()) {
+                if (!"requestAudioFocus".equals(m.getName())) continue;
+                module.hook(m).intercept(chain -> {
+                    if (!Cfg.bool(FeatureKeys.IGNORE_AUDIO_FOCUS)) return chain.proceed();
+                    java.util.List<Object> args = chain.getArgs();
+                    if (!args.isEmpty() && args.get(0) instanceof android.media.AudioAttributes) {
+                        int usage = ((android.media.AudioAttributes) args.get(0)).getUsage();
+                        boolean allowed = usage == android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION
+                                || usage == android.media.AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY
+                                || usage == android.media.AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE;
+                        if (!allowed) return android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+                    }
+                    return chain.proceed();
+                });
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        logOk("ignore-audio-focus", n);
+    }
+
+    /** 禁用 Root 检测：HeimdallService.isRootEnable 恒 false */
+    private void hookRootCheck(ClassLoader cl) {
+        int n = repFalse(cl, "com.android.server.oplus.heimdall.HeimdallService",
+                FeatureKeys.DISABLE_ROOT_CHECK, "isRootEnable");
+        logOk("root-check", n);
+    }
+
+    /** 分屏与小窗：FlexibleWindowUtils/FlexibleWindowManagerService 黑白名单与参数覆写 */
+    private void hookSplitScreen(ClassLoader cl) {
+        try {
+            Class<?> fwu = cl.loadClass("com.android.server.wm.FlexibleWindowUtils");
+            int n = 0;
+            final String rk = FeatureKeys.REMOVE_SMALL_WIN_RESTRICT;
+            n += rep(fwu, rk, Boolean.TRUE, "isUnSupportCallerFlexibleWindow");
+            n += rep(fwu, rk, Boolean.TRUE, "isSupportFlexibleWindow");
+            n += rep(fwu, rk, Boolean.FALSE, "isInFlexibleWindowBlackList",
+                    "isInMultiWindowFlexibleBlackList", "isFlexibleTaskInPSBlackList");
+            for (Method m : ms(fwu, "getUnSupportRatiosInFlexibleTask")) {
+                module.hook(m).intercept(chain ->
+                        Cfg.bool(rk) ? "" : chain.proceed());
+                n++;
+            }
+            logOk("small-window", n);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "small-window hook failed", t);
+        }
+        try {
+            Class<?> fwm = cl.loadClass("com.android.server.wm.FlexibleWindowManagerService");
+            int n = 0;
+            for (Method m : fwm.getDeclaredMethods()) {
+                if (m.getParameterCount() != 1 || m.getReturnType() != int.class) continue;
+                String name = m.getName();
+                String key;
+                if ("getMaxWinNum".equals(name)) key = FeatureKeys.MAX_SMALL_WINDOWS;
+                else if ("getCornerRadius".equals(name)) key = FeatureKeys.SMALL_WIN_CORNER_RADIUS;
+                else if ("getShadowRadiusFocused".equals(name)) key = FeatureKeys.SMALL_WIN_FOCUSED_SHADOW;
+                else if ("getShadowRadiusUnfocused".equals(name)) key = FeatureKeys.SMALL_WIN_UNFOCUSED_SHADOW;
+                else continue;
+                module.hook(m).intercept(chain -> {
+                    int v = Cfg.intv(key);
+                    return v != -1 ? v : chain.proceed();
+                });
+                n++;
+            }
+            n += rep(fwm, FeatureKeys.FORCE_MULTI_WINDOW_MODE, Boolean.TRUE,
+                    "isSupportMultiMode");
+            logOk("small-window-svc", n);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    // ── 核心破解扩充（OShin PMS 检查移植）──
+
+    private void hookPmsChecks(ClassLoader cl) {
+        hookDowngradeUtils(cl);
+        hookJarVerifier(cl);
+        hookArscCheck(cl);
+        hookMinSigVersion(cl);
+        hookSigMismatchUpdate(cl);
+        hookSplitSigMismatch(cl);
+        hookHiddenApi(cl);
+        hookSharedUid(cl);
+        hookInstallVerification(cl);
+        hookV1SigErrors(cl);
+        hookPmsCommand(cl);
+    }
+
+    /** PackageManagerServiceUtils.checkDowngrade（另一处降级检查入口） */
+    private void hookDowngradeUtils(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> u = cl.loadClass("com.android.server.pm.PackageManagerServiceUtils");
+            for (Method m : ms(u, "checkDowngrade")) {
+                module.hook(m).intercept(chain ->
+                        Cfg.bool(FeatureKeys.ALLOW_DOWNGRADE) ? null : chain.proceed());
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        if (n > 0) logOk("downgrade-utils", n);
+    }
+
+    /** StrictJarVerifier 校验置真 + 关闭签名方案回滚保护 */
+    private void hookJarVerifier(ClassLoader cl) {
+        try {
+            Class<?> sjv = cl.loadClass("android.util.jar.StrictJarVerifier");
+            final String k = FeatureKeys.DISABLE_JAR_VERIFIER;
+            int n = 0;
+            for (Method m : ms(sjv, "verifyMessageDigest", "verify")) {
+                if (m.getReturnType() != boolean.class) continue;
+                module.hook(m).intercept(chain ->
+                        Cfg.bool(k) ? Boolean.TRUE : chain.proceed());
+                n++;
+            }
+            for (java.lang.reflect.Constructor<?> ctor : sjv.getDeclaredConstructors()) {
+                module.hook(ctor).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Cfg.bool(k)) {
+                        Field f = findField(sjv, "signatureSchemeRollbackProtectionsEnforced");
+                        if (f != null) f.setBoolean(chain.getThisObject(), false);
+                    }
+                    return r;
+                });
+            }
+            if (n > 0) logOk("jar-verifier", n);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "jar-verifier failed", t);
+        }
+        try {
+            Class<?> md = Class.forName("java.security.MessageDigest");
+            for (Method m : ms(md, "isEqual")) {
+                module.hook(m).intercept(chain ->
+                        Cfg.bool(FeatureKeys.DISABLE_MESSAGE_DIGEST) ? Boolean.TRUE : chain.proceed());
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 绕过 resources.arsc 未压缩检查 */
+    private void hookArscCheck(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> am = Class.forName("android.content.res.AssetManager");
+            for (Method m : ms(am, "containsAllocatedTable")) {
+                module.hook(m).intercept(chain ->
+                        Cfg.bool(FeatureKeys.BYPASS_ARSC_CHECK) ? Boolean.FALSE : chain.proceed());
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        if (n > 0) logOk("arsc-check", n);
+    }
+
+    /** 绕过最低签名方案版本：目标 SDK 阈值归零 + 跳过断言异常 */
+    private void hookMinSigVersion(ClassLoader cl) {
+        try {
+            Class<?> asv = cl.loadClass("android.util.apk.ApkSignatureVerifier");
+            int n = 0;
+            for (Method m : ms(asv, "getMinimumSignatureSchemeVersionForTargetSdk")) {
+                if (m.getParameterCount() != 1 || m.getReturnType() != int.class) continue;
+                module.hook(m).intercept(chain ->
+                        Cfg.bool(FeatureKeys.BYPASS_MIN_SIG_VERSION) ? 0 : chain.proceed());
+                n++;
+            }
+            Class<?> spu = cl.loadClass("com.android.server.pm.ScanPackageUtils");
+            for (Method m : ms(spu, "assertMinSignatureSchemeIsValid")) {
+                module.hook(m).intercept(chain -> {
+                    try {
+                        return chain.proceed();
+                    } catch (Throwable t) {
+                        if (Cfg.bool(FeatureKeys.BYPASS_MIN_SIG_VERSION)) return null;
+                        throw t;
+                    }
+                });
+                n++;
+            }
+            if (n > 0) logOk("min-sig-version", n);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 覆盖安装签名不一致：checkCapability 放行 + KeySet 检查绕过 */
+    private void hookSigMismatchUpdate(ClassLoader cl) {
+        try {
+            Class<?> sd = cl.loadClass("android.content.pm.SigningDetails");
+            int n = 0;
+            for (Method m : ms(sd, "checkCapability")) {
+                if (m.getParameterCount() != 2) continue;
+                module.hook(m).intercept(chain -> {
+                    if (!Cfg.bool(FeatureKeys.ALLOW_SIG_MISMATCH_UPDATE)) return chain.proceed();
+                    java.util.List<Object> args = chain.getArgs();
+                    if (args.size() >= 2 && args.get(1) instanceof Integer) {
+                        int cap = (Integer) args.get(1);
+                        if (cap != 4 && cap != 16) return Boolean.TRUE;
+                    }
+                    return chain.proceed();
+                });
+                n++;
+            }
+            Class<?> ksm = cl.loadClass("com.android.server.pm.KeySetManagerService");
+            for (Method m : ms(ksm, "shouldCheckUpgradeKeySetLocked")) {
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (!Cfg.bool(FeatureKeys.ALLOW_SIG_MISMATCH_UPDATE)) return r;
+                    boolean fromPrepare = false;
+                    for (StackTraceElement e : Thread.currentThread().getStackTrace()) {
+                        if (e.getMethodName().startsWith("preparePackage")) {
+                            fromPrepare = true;
+                            break;
+                        }
+                    }
+                    KS_BYPASS_KEYSET.set(fromPrepare);
+                    return fromPrepare ? Boolean.TRUE : r;
+                });
+                n++;
+            }
+            for (Method m : ms(ksm, "checkUpgradeKeySetLocked")) {
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Cfg.bool(FeatureKeys.ALLOW_SIG_MISMATCH_UPDATE)
+                            && Boolean.TRUE.equals(KS_BYPASS_KEYSET.get())) return Boolean.TRUE;
+                    return r;
+                });
+                n++;
+            }
+            if (n > 0) logOk("sig-mismatch-update", n);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Split APK 签名不一致放行 */
+    private void hookSplitSigMismatch(ClassLoader cl) {
+        int n = repTrue(cl, "android.content.pm.SigningDetails",
+                FeatureKeys.ALLOW_SPLIT_SIG_MISMATCH, "signaturesMatchExactly");
+        if (n > 0) logOk("split-sig", n);
+    }
+
+    /** 系统应用隐藏 API 白名单 */
+    private void hookHiddenApi(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> ai = android.content.pm.ApplicationInfo.class;
+            for (Method m : ms(ai, "isPackageWhitelistedForHiddenApis")) {
+                if (m.getReturnType() != boolean.class) continue;
+                final boolean isStatic = java.lang.reflect.Modifier.isStatic(m.getModifiers());
+                module.hook(m).intercept(chain -> {
+                    if (!Cfg.bool(FeatureKeys.ALLOW_HIDDEN_API)) return chain.proceed();
+                    Object info = isStatic ? null : chain.getThisObject();
+                    if (info instanceof android.content.pm.ApplicationInfo) {
+                        int flags = ((android.content.pm.ApplicationInfo) info).flags;
+                        if ((flags & 1) != 0 || (flags & 128) != 0) return Boolean.TRUE;
+                    }
+                    return chain.proceed();
+                });
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        if (n > 0) logOk("hidden-api", n);
+    }
+
+    /** 非系统预装共享 UID 放行 */
+    private void hookSharedUid(ClassLoader cl) {
+        if (!Cfg.bool(FeatureKeys.ALLOW_NONSYSTEM_SHARED_UID)) return;
+        try {
+            Class<?> rpu = cl.loadClass("com.android.server.pm.ReconcilePackageUtils");
+            Field f = findField(rpu, "ALLOW_NON_PRELOADS_SYSTEM_SHAREDUIDS");
+            if (f != null && f.getType() == boolean.class) {
+                f.setAccessible(true);
+                f.setBoolean(null, true);
+                logOk("shared-uid", 1);
+            }
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "shared-uid failed", t);
+        }
+    }
+
+    /** 安装验证关闭：isVerificationEnabled（与跳过签名验证共用效果） */
+    private void hookInstallVerification(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> vs = cl.loadClass("com.android.server.pm.VerifyingSession");
+            for (Method m : ms(vs, "isVerificationEnabled")) {
+                if (m.getReturnType() != boolean.class) continue;
+                module.hook(m).intercept(chain -> {
+                    if (Cfg.bool(FeatureKeys.DISABLE_INSTALL_VERIFICATION)
+                            || Cfg.bool(FeatureKeys.DISABLE_VERIFY)) return Boolean.FALSE;
+                    return chain.proceed();
+                });
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        if (n > 0) logOk("install-verification", n);
+    }
+
+    private static final java.util.concurrent.atomic.AtomicReference<Object> PMS_INSTANCE =
+            new java.util.concurrent.atomic.AtomicReference<>();
+    private static final ThreadLocal<Boolean> KS_BYPASS_KEYSET = new ThreadLocal<>();
+
+    /** V1 签名错误兜底：抛出 error=-103 时替换为 CorePatch 证书签名 */
+    private void hookV1SigErrors(ClassLoader cl) {
+        try {
+            Class<?> asv = cl.loadClass("android.util.apk.ApkSignatureVerifier");
+            Class<?> ppe = null;
+            try {
+                ppe = cl.loadClass("android.content.pm.PackageParser$PackageParserException");
+            } catch (Throwable ignored) {
+            }
+            final Class<?> ppeClass = ppe;
+            final Field errField = ppe != null ? findField(ppe, "error") : null;
+            int n = 0;
+            for (Method m : ms(asv, "verifyV1Signature")) {
+                module.hook(m).intercept(chain -> {
+                    try {
+                        return chain.proceed();
+                    } catch (Throwable t) {
+                        if (!Cfg.bool(FeatureKeys.BYPASS_V1_SIG_ERRORS)) throw t;
+                        if (!isV1Error(t, ppeClass, errField)) throw t;
+                        Object sd = newSigningDetailsV1(cl);
+                        if (sd == null) throw t;
+                        return sd;
+                    }
+                });
+                n++;
+            }
+            if (n > 0) logOk("v1-sig-errors", n);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "v1-sig-errors failed", t);
+        }
+    }
+
+    private static boolean isV1Error(Throwable t, Class<?> ppe, Field errField) {
+        if (ppe == null || errField == null) return false;
+        Throwable cur = t;
+        for (int i = 0; i < 3 && cur != null; i++) {
+            if (cur.getClass() == ppe) {
+                try {
+                    if (errField.getInt(cur) == -103) return true;
+                } catch (Throwable ignored) {
+                }
+            }
+            cur = cur.getCause();
+        }
+        return false;
+    }
+
+    static final String COREPATCH_CERT =
+            "308203c6308202aea003020102021426d148b7c65944abcf3a683b4c3dd3b139c4ec85300d06092a864886f70d01010b05003074310b3009060355040613025553311330110603550408130a43616c69666f726e6961311630140603550407130d4d6f756e7461696e205669657731143012060355040a130b476f6f676c6520496e632e3110300e060355040b1307416e64726f69643110300e06035504031307416e64726f6964301e170d3139303130323138353233385a170d3439303130323138353233385a3074310b3009060355040613025553311330110603550408130a43616c69666f726e6961311630140603550407130d4d6f756e7461696e205669657731143012060355040a130b476f6f676c6520496e632e3110300e060355040b1307416e64726f69643110300e06035504031307416e64726f696430820122300d06092a864886f70d01010105000382010f003082010a028201010087fcde48d9beaeba37b733a397ae586fb42b6c3f4ce758dc3ef1327754a049b58f738664ece587994f1c6362f98c9be5fe82c72177260c390781f74a10a8a6f05a6b5ca0c7c5826e15526d8d7f0e74f2170064896b0cf32634a388e1a975ed6bab10744d9b371cba85069834bf098f1de0205cdee8e715759d302a64d248067a15b9beea11b61305e367ac71b1a898bf2eec7342109c9c5813a579d8a1b3e6a3fe290ea82e27fdba748a663f73cca5807cff1e4ad6f3ccca7c02945926a47279d1159599d4ecf01c9d0b62e385c6320a7a1e4ddc9833f237e814b34024b9ad108a5b00786ea15593a50ca7987cbbdc203c096eed5ff4bf8a63d27d33ecc963990203010001a350304e300c0603551d13040530030101ff301d0603551d0e04160414a361efb002034d596c3a60ad7b0332012a16aee3301f0603551d23041830168014a361efb002034d596c3a60ad7b0332012a16aee3300d06092a864886f70d01010b0500038201010022ccb684a7a8706f3ee7c81d6750fd662bf39f84805862040b625ddf378eeefae5a4f1f283deea61a3c7f8e7963fd745415153a531912b82b596e7409287ba26fb80cedba18f22ae3d987466e1fdd88e440402b2ea2819db5392cadee501350e81b8791675ea1a2ed7ef7696dff273f13fb742bb9625fa12ce9c2cb0b7b3d94b21792f1252b1d9e4f7012cb341b62ff556e6864b40927e942065d8f0f51273fcda979b8832dd5562c79acf719de6be5aee2a85f89265b071bf38339e2d31041bc501d5e0c034ab1cd9c64353b10ee70b49274093d13f733eb9d3543140814c72f8e003f301c7a00b1872cc008ad55e26df2e8f07441002c4bcb7dc746745f0db";
+
+    private static Object newSigningDetailsV1(ClassLoader cl) {
+        try {
+            Class<?> sigC = cl.loadClass("android.content.pm.Signature");
+            Object sig = sigC.getConstructor(String.class).newInstance(COREPATCH_CERT);
+            Object sigArr = java.lang.reflect.Array.newInstance(sigC, 1);
+            java.lang.reflect.Array.set(sigArr, 0, sig);
+            Class<?> sd = cl.loadClass("android.content.pm.SigningDetails");
+            for (java.lang.reflect.Constructor<?> c : sd.getDeclaredConstructors()) {
+                Class<?>[] ps = c.getParameterTypes();
+                if (ps.length == 2 && ps[0].isArray() && ps[1] == int.class) {
+                    c.setAccessible(true);
+                    return c.newInstance(sigArr, 1);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** adb shell pm pms 调试命令：转储包/共享用户签名信息 */
+    private void hookPmsCommand(ClassLoader cl) {
+        if (!Cfg.bool(FeatureKeys.PMS_COMMAND)) return;
+        try {
+            Class<?> pms = cl.loadClass("com.android.server.pm.PackageManagerService");
+            for (java.lang.reflect.Constructor<?> ctor : pms.getDeclaredConstructors()) {
+                module.hook(ctor).intercept(chain -> {
+                    Object r = chain.proceed();
+                    PMS_INSTANCE.set(chain.getThisObject());
+                    return r;
+                });
+            }
+            Class<?> pmsc = cl.loadClass("com.android.server.pm.PackageManagerShellCommand");
+            for (Method m : ms(pmsc, "onCommand")) {
+                if (m.getParameterCount() != 1) continue;
+                module.hook(m).intercept(chain -> {
+                    java.util.List<Object> args = chain.getArgs();
+                    Object cmd = args.isEmpty() ? null : args.get(0);
+                    if (!"pms".equals(cmd)) return chain.proceed();
+                    Object localPms = PMS_INSTANCE.get();
+                    if (localPms == null) return 0;
+                    Object shell = chain.getThisObject();
+                    try {
+                        Object pw = shell.getClass().getMethod("getOutPrintWriter").invoke(shell);
+                        String type = (String) shell.getClass()
+                                .getMethod("getNextArgRequired").invoke(shell);
+                        Object settings = findField(localPms.getClass(), "mSettings") == null
+                                ? null : findField(localPms.getClass(), "mSettings").get(localPms);
+                        if (settings == null) {
+                            pw.getClass().getMethod("println", String.class)
+                                    .invoke(pw, "Error: Could not get mSettings from PMS.");
+                            return 0;
+                        }
+                        if ("p".equals(type) || "package".equals(type)) {
+                            String name = (String) shell.getClass()
+                                    .getMethod("getNextArgRequired").invoke(shell);
+                            Object ps = null;
+                            for (Method gm : settings.getClass().getDeclaredMethods()) {
+                                if ("getPackageLPr".equals(gm.getName())
+                                        && gm.getParameterCount() == 1
+                                        && gm.getParameterTypes()[0] == String.class) {
+                                    gm.setAccessible(true);
+                                    ps = gm.invoke(settings, name);
+                                    break;
+                                }
+                            }
+                            if (ps != null) dumpSettingSignatures(cl, ps, pw);
+                            else pw.getClass().getMethod("println", String.class)
+                                    .invoke(pw, "no package " + name + " found");
+                        } else if ("su".equals(type) || "shareduser".equals(type)) {
+                            String name = (String) shell.getClass()
+                                    .getMethod("getNextArgRequired").invoke(shell);
+                            Field suField = findField(settings.getClass(), "mSharedUsers");
+                            Object su = suField == null ? null
+                                    : suField.get(settings);
+                            Object target = null;
+                            if (su instanceof java.util.Map) {
+                                target = ((java.util.Map<?, ?>) su).get(name);
+                            }
+                            if (target != null) dumpSettingSignatures(cl, target, pw);
+                            else pw.getClass().getMethod("println", String.class)
+                                    .invoke(pw, "no shared user " + name + " found");
+                        } else {
+                            pw.getClass().getMethod("println", String.class)
+                                    .invoke(pw, "usage: <p|package|su|shareduser> <name>");
+                        }
+                    } catch (Throwable t) {
+                        module.log(Log.WARN, TAG, "pms command failed", t);
+                    }
+                    return 0;
+                });
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void dumpSettingSignatures(ClassLoader cl, Object setting, Object pw) throws Exception {
+        java.io.PrintWriter w = pw instanceof java.io.PrintWriter
+                ? (java.io.PrintWriter) pw : null;
+        if (w == null) return;
+        Object sigsObj = findField(setting.getClass(), "signatures") != null
+                ? findField(setting.getClass(), "signatures").get(setting) : null;
+        Object signingDetails = sigsObj;
+        if (signingDetails != null) {
+            Field sdf = findField(signingDetails.getClass(), "mSigningDetails");
+            if (sdf != null) signingDetails = sdf.get(signingDetails);
+        }
+        w.println("signing for " + setting);
+        if (signingDetails == null) return;
+        Object[] sigs = null;
+        try {
+            sigs = (Object[]) signingDetails.getClass().getMethod("getSignatures").invoke(signingDetails);
+        } catch (Throwable ignored) {
+        }
+        if (sigs == null) {
+            w.println("Could not get signatures.");
+            return;
+        }
+        for (int i = 0; i < sigs.length; i++) {
+            Object s = sigs[i];
+            String hex = null;
+            try {
+                hex = (String) s.getClass().getMethod("toCharsString").invoke(s);
+            } catch (Throwable ignored) {
+            }
+            w.println((i + 1) + ": " + hex);
+        }
+    }
+
+    // ── 小布扫一扫（OShin 移植）──
+
+    /** 全屏翻译：绕过不支持应用判定 */
+    private void hookFullScreenTranslation(ClassLoader cl) {
+        if (!Cfg.bool(FeatureKeys.FULL_SCREEN_TRANSLATION)) return;
+        int n = 0;
+        try {
+            Class<?> root = cl.loadClass(
+                    "com.oplus.scanner.screentrans.ui.ScreenTranslationRootView");
+            for (Method m : root.getDeclaredMethods()) {
+                if (!"s0".equals(m.getName()) || m.getParameterCount() != 1
+                        || m.getReturnType() != boolean.class) continue;
+                module.hook(m).intercept(chain -> Boolean.FALSE);
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> inner = cl.loadClass(
+                    "com.oplus.scanner.screentrans.ui.ScreenTranslationRootView$onNotSupportApp$1");
+            for (Method m : inner.getDeclaredMethods()) {
+                if (!"invokeSuspend".equals(m.getName())
+                        || m.getParameterCount() != 1) continue;
+                module.hook(m).intercept(chain -> Boolean.FALSE);
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> cap = cl.loadClass(
+                    "com.oplus.scanner.screentrans.ui.ScreenTranslationToolCapsule");
+            for (Method m : cap.getDeclaredMethods()) {
+                if (m.getParameterCount() != 0 || m.getReturnType() != boolean.class) continue;
+                module.hook(m).intercept(chain -> Boolean.TRUE);
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        logOk("full-screen-translation", n);
+    }
+
+    // ── 主题商店（OShin 移植）──
+
+    private void hookThemeStore(ClassLoader cl) {
+        if (Cfg.bool(FeatureKeys.THEME_UNLOCK_VIP)) hookThemeVip(cl);
+        if (Cfg.bool(FeatureKeys.THEME_REMOVE_SPLASH_ADS)) hookThemeSplashAds(cl);
+        if (Cfg.bool(FeatureKeys.THEME_REMOVE_UPGRADE)) hookThemeUpgrade(cl);
+    }
+
+    private int repDto(ClassLoader cl, String cn, String method, Object val) {
+        int n = 0;
+        try {
+            Class<?> c = cl.loadClass(cn);
+            for (Method m : ms(c, method)) {
+                module.hook(m).intercept(chain -> val);
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        return n;
+    }
+
+    /** 解锁 VIP：DTO 字段改写 + UserInfoManager 状态伪造 + 价格归零 */
+    private void hookThemeVip(ClassLoader cl) {
+        try {
+            Class<?> wpr = cl.loadClass("com.oppo.cdo.card.theme.dto.page.WeatherPageResponseDto");
+            for (Method m : ms(wpr, "getVipStatus")) {
+                module.hook(m).intercept(chain -> {
+                    Field f = findField(wpr, "vipStatus");
+                    if (f != null) f.setInt(chain.getThisObject(), 1);
+                    return 1;
+                });
+            }
+            Class<?> vud = cl.loadClass("com.oppo.cdo.card.theme.dto.vip.VipUserDto");
+            for (Method m : ms(vud, "getVipStatus", "getVipDays")) {
+                module.hook(m).intercept(chain -> {
+                    Object self = chain.getThisObject();
+                    Field fs = findField(vud, "vipStatus");
+                    if (fs != null) fs.setInt(self, 1);
+                    Field fd = findField(vud, "vipDays");
+                    if (fd != null) fd.setInt(self, 99999);
+                    Field fe = findField(vud, "endTime");
+                    if (fe != null) fe.setLong(self, 999999999L);
+                    return "getVipStatus".equals(m.getName()) ? 1 : 99999;
+                });
+            }
+            Class<?> rid = cl.loadClass("com.oppo.cdo.theme.domain.dto.response.ResourceItemDto");
+            for (Method m : ms(rid, "getIsVip", "getIsVipAvailable")) {
+                module.hook(m).intercept(chain -> {
+                    Object self = chain.getThisObject();
+                    Field f1 = findField(rid, "isVip");
+                    if (f1 != null) f1.setInt(self, 1);
+                    Field f2 = findField(rid, "isVipAvailable");
+                    if (f2 != null) f2.setInt(self, 1);
+                    return 1;
+                });
+            }
+            logOk("theme-vip-dto", 1);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "theme-vip-dto failed", t);
+        }
+        try {
+            Class<?> uim = cl.loadClass("com.nearme.themespace.UserInfoManager");
+            for (Method m : uim.getDeclaredMethods()) {
+                if (!"w".equals(m.getName()) || m.getParameterCount() != 0) continue;
+                module.hook(m).intercept(chain -> 1);
+            }
+            for (Method m : uim.getDeclaredMethods()) {
+                if (!"D".equals(m.getName()) || m.getParameterCount() != 0) continue;
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    try {
+                        Class<?> vs = cl.loadClass("com.nearme.themespace.account.VipUserStatus");
+                        Field valid = findField(vs, "VALID");
+                        if (valid != null && r != null) return valid.get(r);
+                    } catch (Throwable ignored) {
+                    }
+                    return r;
+                });
+            }
+            logOk("theme-vip-user", 1);
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> dr = cl.loadClass("com.nearme.themespace.download.mvvm.DownloadRepository");
+            for (Method m : dr.getDeclaredMethods()) {
+                Class<?>[] ps = m.getParameterTypes();
+                if (ps.length != 1 || !ps[0].getName().contains("LocalProductInfo")) continue;
+                module.hook(m).intercept(chain -> {
+                    java.util.List<Object> args = chain.getArgs();
+                    Object info = args.isEmpty() ? null : args.get(0);
+                    if (info != null) {
+                        Field f1 = findField(info.getClass(), "mPurchaseStatus");
+                        if (f1 != null) f1.setInt(info, 1);
+                        Field f2 = findField(info.getClass(), "mResourceVipType");
+                        if (f2 != null) f2.setInt(info, 0);
+                        Field f3 = findField(info.getClass(), "forceVip");
+                        if (f3 != null) f3.setInt(info, 0);
+                    }
+                    return chain.proceed();
+                });
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> ter = cl.loadClass("com.nearme.themespace.trial.ThemeTrialExpireReceiver");
+            for (Method m : ms(ter, "onReceive")) {
+                module.hook(m).intercept(chain -> {
+                    java.util.List<Object> args = chain.getArgs();
+                    if (args.size() > 1 && args.get(1) instanceof android.content.Intent) {
+                        ((android.content.Intent) args.get(1)).setAction("");
+                    }
+                    return chain.proceed();
+                });
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            int n = 0;
+            for (Method m : DexLocator.findGlobal(cl, c ->
+                    "getPrice".equals(c.name) && c.paramCount == 0
+                            && "D".equals(c.returnType))) {
+                m.setAccessible(true);
+                module.hook(m).intercept(chain -> 0.0d);
+                n++;
+            }
+            logOk("theme-vip-price", n);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "theme-vip-price failed", t);
+        }
+    }
+
+    /** 移除开屏广告：SplashDto 广告数据置空 + 时间窗错开 */
+    private void hookThemeSplashAds(ClassLoader cl) {
+        try {
+            Class<?> sd = cl.loadClass("com.oppo.cdo.card.theme.dto.SplashDto");
+            int n = 0;
+            for (Method m : ms(sd, "getAdData", "getImage")) {
+                module.hook(m).intercept(chain -> null);
+                n++;
+            }
+            for (Method m : ms(sd, "getStartTime")) {
+                module.hook(m).intercept(chain -> System.currentTimeMillis() + 86400000L);
+                n++;
+            }
+            for (Method m : ms(sd, "getEndTime")) {
+                module.hook(m).intercept(chain -> System.currentTimeMillis() - 86400000L);
+                n++;
+            }
+            logOk("theme-splash-ads", n);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 移除升级弹窗：UpgradeSDK.checkUpgrade 置空 */
+    private void hookThemeUpgrade(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> us = cl.loadClass("com.heytap.upgrade.UpgradeSDK");
+            for (Method m : ms(us, "checkUpgrade")) {
+                module.hook(m).intercept(chain -> null);
+                n++;
+            }
+        } catch (Throwable ignored) {
+        }
+        logOk("theme-upgrade", n);
+    }
+
+    // ── 智慧侧边栏（OShin e02 移植）──
+
+    private void hookSmartSidebar(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> upv = cl.loadClass(
+                    "com.oplus.smartsidebar.panelview.edgepanel.mainpanel.UserPanelView");
+            if (Cfg.bool(FeatureKeys.REMOVE_APP_ADD_LIMIT)) {
+                Field maxEntry = findField(upv, "MAX_USER_ENTRY");
+                if (maxEntry != null) {
+                    setStaticInt(upv, maxEntry, 999);
+                    n++;
+                }
+            }
+            n += repCanAdd(upv, FeatureKeys.REMOVE_APP_ADD_LIMIT);
+            for (Method m : ms(upv, "performAdd")) {
+                if (m.getParameterCount() != 1
+                        || !m.getParameterTypes()[0].getName().endsWith("AppLabelData")) continue;
+                module.hook(m).intercept(chain -> {
+                    if (!Cfg.bool(FeatureKeys.REMOVE_APP_ADD_LIMIT)) return chain.proceed();
+                    try {
+                        Object self = chain.getThisObject();
+                        if (self != null) {
+                            Object list = fieldValue(self, "mPanelData");
+                            Object item = fieldValue(self, "mEditOccupancyData");
+                            if (list instanceof java.util.List && item != null) {
+                                ((java.util.List<Object>) list).add(item);
+                            }
+                        }
+                    } catch (Throwable t) {
+                        module.log(Log.WARN, TAG, "sidebar performAdd failed", t);
+                    }
+                    return chain.proceed();
+                });
+                n++;
+            }
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "smartsidebar hook failed", t);
+        }
+        try {
+            Class<?> pmv = cl.loadClass("com.oplus.smartsidebar.panelview.edgepanel.PanelMainView");
+            n += repCanAdd(pmv, FeatureKeys.REMOVE_APP_ADD_LIMIT);
+        } catch (Throwable ignored) {
+        }
+        logOk("smartsidebar", n);
+    }
+
+    private int repCanAdd(Class<?> c, final String key) {
+        int n = 0;
+        for (Method m : ms(c, "canAdd")) {
+            if (m.getParameterCount() != 1
+                    || m.getParameterTypes()[0] != String.class
+                    || m.getReturnType() != boolean.class) continue;
+            module.hook(m).intercept(chain ->
+                    Cfg.bool(key) ? Boolean.TRUE : chain.proceed());
+            n++;
+        }
+        return n;
+    }
+
+    private static Object fieldValue(Object self, String name) throws Exception {
+        Field f = findField(self.getClass(), name);
+        return f == null ? null : f.get(self);
+    }
+
+    /** 写静态 int 字段；final 字段回退 Unsafe（ART 上可用） */
+    private static void setStaticInt(Class<?> owner, Field f, int v) throws Exception {
+        try {
+            f.setInt(null, v);
+        } catch (IllegalAccessException e) {
+            Field uf = findField(sun.misc.Unsafe.class, "theUnsafe");
+            if (uf == null) throw e;
+            sun.misc.Unsafe u = (sun.misc.Unsafe) uf.get(null);
+            u.putInt(owner, u.staticFieldOffset(f), v);
         }
     }
 

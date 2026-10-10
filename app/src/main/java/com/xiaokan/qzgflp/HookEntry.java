@@ -36,8 +36,7 @@ public final class HookEntry extends XposedModule {
                             any = true;
                         }
                     }
-                    for (String ik : new String[]{FeatureKeys.LAYOUT_ROWS,
-                            FeatureKeys.LAYOUT_COLS}) {
+                    for (String ik : FeatureKeys.INT_KEYS) {
                         if (rp.contains(ik)) {
                             b.putInt("i_" + ik, rp.getInt(ik,
                                     (Integer) FeatureKeys.defaultValue(ik)));
