@@ -3,8 +3,10 @@ package com.xiaokan.qzgflp;
 import android.app.Activity;
 import android.app.AppOpsManager;
 import android.content.ComponentName;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -18,8 +20,10 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -535,6 +539,8 @@ final class MultiFeatures {
                 hookThemeStore(cl);
             } else if (pkg.equals("com.coloros.smartsidebar")) {
                 hookSmartSidebar(cl);
+            } else if (pkg.equals("com.oplus.safecenter")) {
+                hookSafeProvider(cl);
             }
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "multi-features failed in " + pkg, t);
@@ -1884,5 +1890,253 @@ final class MultiFeatures {
             }
         }
         return null;
+    }
+
+    // ── 安全中心 SafeProvider（OShin hz1 移植）──
+
+    private static final String SAFE_AUTHORITY = "com.oplus.provider.SafeProvider";
+    private static final String[] SAFE_MODULE_NAMES = {
+            "total", "clean", "traffic", "blacklist", "permission", "virus", "power"};
+    private static final Set<String> SAFE_VD_KEYS = new HashSet<>(Arrays.asList(
+            "vd_auto_update", "vd_last_scan_time", "vd_last_scan_result"));
+    private static final java.util.Map<String, String> SAFE_VD_VALUES = new java.util.HashMap<>();
+    private static final Pattern SAFE_PKG_PATTERN =
+            Pattern.compile("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+");
+
+    static {
+        SAFE_VD_VALUES.put("vd_auto_update", "1");
+        SAFE_VD_VALUES.put("vd_last_scan_result", "0");
+    }
+
+    private void hookSafeProvider(ClassLoader cl) {
+        int n = 0;
+        try {
+            Class<?> c = cl.loadClass("com.oplus.safecenter.common.provider.SafeProvider");
+            for (Method m : ms(c, "query")) {
+                module.hook(m).intercept(chain -> {
+                    Object r = safeQueryResult(chain.getArgs().toArray());
+                    return r != null ? r : chain.proceed();
+                });
+                n++;
+            }
+            for (Method m : ms(c, "insert")) {
+                module.hook(m).intercept(chain -> {
+                    safeMutateValues(chain.getArgs().toArray(), 2);
+                    return chain.proceed();
+                });
+                n++;
+            }
+            for (Method m : ms(c, "update")) {
+                module.hook(m).intercept(chain -> {
+                    Object[] args = chain.getArgs().toArray();
+                    safeMutateValues(args, 2);
+                    Integer r = safeUpdateResult(args);
+                    return r != null ? r : chain.proceed();
+                });
+                n++;
+            }
+            for (Method m : ms(c, "delete")) {
+                module.hook(m).intercept(chain -> {
+                    Integer r = safeDeleteResult(chain.getArgs().toArray());
+                    return r != null ? r : chain.proceed();
+                });
+                n++;
+            }
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "safecenter provider hook failed", t);
+        }
+        logOk("safecenter-provider", n);
+    }
+
+    private static String[] safeCols(String[] projection, String... def) {
+        return projection != null && projection.length > 0 ? projection : def;
+    }
+
+    private static Object safeQueryResult(Object[] args) {
+        if (args == null || args.length < 1 || !(args[0] instanceof Uri)) return null;
+        String path = ((Uri) args[0]).getLastPathSegment();
+        if (path == null) return null;
+        String[] projection = args.length > 1 && args[1] instanceof String[] ? (String[]) args[1] : null;
+        String selection = args.length > 2 && args[2] instanceof String ? (String) args[2] : null;
+        String[] selArgs = args.length > 3 && args[3] instanceof String[] ? (String[]) args[3] : null;
+        switch (path) {
+            case "settings": {
+                if (!Cfg.bool(FeatureKeys.FAKE_SCAN_RESULT)) return null;
+                Set<String> keys = safeVdKeys(selection, selArgs);
+                if (keys.isEmpty()) return null;
+                String[] cols = safeCols(projection, "_id", "key", "value");
+                MatrixCursor cursor = new MatrixCursor(cols);
+                int id = 0;
+                for (String key : keys) {
+                    Object[] row = new Object[cols.length];
+                    for (int j = 0; j < cols.length; j++) {
+                        String col = cols[j];
+                        if ("_id".equals(col)) row[j] = id;
+                        else if ("key".equals(col)) row[j] = key;
+                        else if ("value".equals(col)) {
+                            row[j] = "vd_last_scan_time".equals(key)
+                                    ? String.valueOf(System.currentTimeMillis())
+                                    : SAFE_VD_VALUES.get(key);
+                        }
+                    }
+                    cursor.addRow(row);
+                    id++;
+                }
+                return cursor;
+            }
+            case "vd_virus": {
+                if (!Cfg.bool(FeatureKeys.CLEAR_RISK_APPS)) return null;
+                return new MatrixCursor(safeCols(projection, "_id", "apkType", "packageName", "path"));
+            }
+            case "ssm_status_track": {
+                if (!Cfg.bool(FeatureKeys.CLEAR_STATUS_ALERTS)) return null;
+                String[] cols = safeCols(projection,
+                        "_id", "module_name", "status_dot", "status_hint", "status_alert");
+                MatrixCursor cursor = new MatrixCursor(cols);
+                int id = 1;
+                for (String name : SAFE_MODULE_NAMES) {
+                    Object[] row = new Object[cols.length];
+                    for (int j = 0; j < cols.length; j++) {
+                        String col = cols[j];
+                        if ("_id".equals(col)) row[j] = id;
+                        else if ("module_name".equals(col)) row[j] = name;
+                    }
+                    cursor.addRow(row);
+                    id++;
+                }
+                return cursor;
+            }
+            case "virus_whitelist": {
+                if (!Cfg.bool(FeatureKeys.FORCE_VIRUS_WHITELIST)) return null;
+                LinkedHashSet<String> pkgs = safeExtractPackages(selection, "pkg_name", selArgs);
+                String[] cols = safeCols(projection, "_id", "pkg_name", "path", "type");
+                MatrixCursor cursor = new MatrixCursor(cols);
+                int id = 1;
+                for (String pkg : pkgs) {
+                    Object[] row = new Object[cols.length];
+                    for (int j = 0; j < cols.length; j++) {
+                        String col = cols[j];
+                        if ("_id".equals(col)) row[j] = id;
+                        else if ("pkg_name".equals(col)) row[j] = pkg;
+                        else if ("path".equals(col)) row[j] = "";
+                        else if ("type".equals(col)) row[j] = 0;
+                    }
+                    cursor.addRow(row);
+                    id++;
+                }
+                return cursor;
+            }
+            case "packageinstaller_whitelist": {
+                if (!Cfg.bool(FeatureKeys.FORCE_PACKAGEINSTALLER_WHITELIST)) return null;
+                LinkedHashSet<String> pkgs = safeExtractPackages(selection, "packageName", selArgs);
+                String[] cols = safeCols(projection, "_id", "packageName", "switch");
+                MatrixCursor cursor = new MatrixCursor(cols);
+                int id = 1;
+                for (String pkg : pkgs) {
+                    Object[] row = new Object[cols.length];
+                    for (int j = 0; j < cols.length; j++) {
+                        String col = cols[j];
+                        if ("_id".equals(col)) row[j] = id;
+                        else if ("packageName".equals(col)) row[j] = pkg;
+                        else if ("switch".equals(col)) row[j] = 1;
+                    }
+                    cursor.addRow(row);
+                    id++;
+                }
+                return cursor;
+            }
+            default:
+                return null;
+        }
+    }
+
+    /** insert/update 共用：按路径补全 ContentValues 默认值 */
+    private static void safeMutateValues(Object[] args, int argc) {
+        if (args == null || args.length < argc || !(args[0] instanceof Uri)) return;
+        Uri uri = (Uri) args[0];
+        if (!SAFE_AUTHORITY.equals(uri.getAuthority())) return;
+        String path = uri.getLastPathSegment();
+        if (path == null) return;
+        ContentValues values = args[1] instanceof ContentValues ? (ContentValues) args[1] : null;
+        if (values == null) return;
+        if ("settings".equals(path)) {
+            if (Cfg.bool(FeatureKeys.FAKE_SCAN_RESULT)) safeFillVdDefaults(values);
+        } else if ("virus_whitelist".equals(path)) {
+            if (Cfg.bool(FeatureKeys.FORCE_VIRUS_WHITELIST)) safeFillWhitelistDefaults(values);
+        } else if ("packageinstaller_whitelist".equals(path)) {
+            if (Cfg.bool(FeatureKeys.FORCE_PACKAGEINSTALLER_WHITELIST)
+                    && !values.containsKey("switch")) {
+                values.put("switch", 1);
+            }
+        }
+    }
+
+    /** update：values 为空且命中伪造键集合时直接返回 1 行受影响 */
+    private static Integer safeUpdateResult(Object[] args) {
+        if (args == null || args.length < 2 || !(args[0] instanceof Uri)) return null;
+        Uri uri = (Uri) args[0];
+        if (!SAFE_AUTHORITY.equals(uri.getAuthority())) return null;
+        ContentValues values = args[1] instanceof ContentValues ? (ContentValues) args[1] : null;
+        if (values != null) return null;
+        String path = uri.getLastPathSegment();
+        if (!"settings".equals(path) || !Cfg.bool(FeatureKeys.FAKE_SCAN_RESULT)) return null;
+        String selection = args.length > 2 && args[2] instanceof String ? (String) args[2] : null;
+        String[] selArgs = args.length > 3 && args[3] instanceof String[] ? (String[]) args[3] : null;
+        return safeVdKeys(selection, selArgs).isEmpty() ? null : 1;
+    }
+
+    /** delete：开启对应开关时对三条业务路径一律返回已删除 */
+    private static Integer safeDeleteResult(Object[] args) {
+        if (args == null || args.length < 1 || !(args[0] instanceof Uri)) return null;
+        Uri uri = (Uri) args[0];
+        if (!SAFE_AUTHORITY.equals(uri.getAuthority())) return null;
+        String path = uri.getLastPathSegment();
+        if ("settings".equals(path) && Cfg.bool(FeatureKeys.FAKE_SCAN_RESULT)) return 1;
+        if ("virus_whitelist".equals(path) && Cfg.bool(FeatureKeys.FORCE_VIRUS_WHITELIST)) return 1;
+        if ("packageinstaller_whitelist".equals(path)
+                && Cfg.bool(FeatureKeys.FORCE_PACKAGEINSTALLER_WHITELIST)) return 1;
+        return null;
+    }
+
+    private static Set<String> safeVdKeys(String selection, String[] selArgs) {
+        Set<String> out = new LinkedHashSet<>();
+        if (selArgs != null) {
+            for (String a : selArgs) if (a != null && SAFE_VD_KEYS.contains(a)) out.add(a);
+        }
+        if (out.isEmpty() && selection != null) {
+            for (String k : SAFE_VD_KEYS) if (selection.contains(k)) out.add(k);
+        }
+        return out;
+    }
+
+    private static LinkedHashSet<String> safeExtractPackages(String selection, String colName,
+            String[] selArgs) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        if (selArgs != null) {
+            for (String a : selArgs) if (a != null && a.indexOf('.') >= 0) out.add(a);
+        }
+        if (out.isEmpty() && selection != null && selection.contains(colName)) {
+            java.util.regex.Matcher m = SAFE_PKG_PATTERN.matcher(selection);
+            while (m.find()) out.add(m.group());
+        }
+        return out;
+    }
+
+    private static void safeFillVdDefaults(ContentValues values) {
+        String key = values.getAsString("key");
+        if (key == null) return;
+        String value;
+        if ("vd_last_scan_time".equals(key)) {
+            value = String.valueOf(System.currentTimeMillis());
+        } else {
+            value = SAFE_VD_VALUES.get(key);
+            if (value == null) return;
+        }
+        values.put("value", value);
+    }
+
+    private static void safeFillWhitelistDefaults(ContentValues values) {
+        if (!values.containsKey("path")) values.put("path", "");
+        if (!values.containsKey("type")) values.put("type", 0);
     }
 }

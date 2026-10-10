@@ -79,6 +79,13 @@ public final class FeatureKeys {
     // ── 智慧侧边栏（com.coloros.smartsidebar，移植 OShin）──
     public static final String REMOVE_APP_ADD_LIMIT = "remove_app_add_limit";
 
+    // ── 安全中心（com.oplus.safecenter，移植 OShin）──
+    public static final String CLEAR_RISK_APPS = "clear_risk_apps";
+    public static final String CLEAR_STATUS_ALERTS = "clear_status_alerts";
+    public static final String FAKE_SCAN_RESULT = "fake_scan_result";
+    public static final String FORCE_PACKAGEINSTALLER_WHITELIST = "force_packageinstaller_whitelist";
+    public static final String FORCE_VIRUS_WHITELIST = "force_virus_whitelist";
+
     // ── 主题商店（com.heytap.themestore）──
     public static final String THEME_UNLOCK_VIP = "unlock_themestore_vip_features";
     public static final String THEME_REMOVE_SPLASH_ADS = "remove_themestore_splash_ads";
@@ -228,6 +235,12 @@ public final class FeatureKeys {
             {THEME_REMOVE_UPGRADE, "移除主题商店升级弹窗", "主题商店"},
             // 智慧侧边栏
             {REMOVE_APP_ADD_LIMIT, "移除侧边栏应用添加上限（需重启）", "智慧侧边栏"},
+            // 安全中心
+            {CLEAR_RISK_APPS, "清空安全扫描风险应用列表", "安全中心"},
+            {CLEAR_STATUS_ALERTS, "清空安全状态提醒项", "安全中心"},
+            {FAKE_SCAN_RESULT, "伪造安全扫描结果（总显示已通过）", "安全中心"},
+            {FORCE_PACKAGEINSTALLER_WHITELIST, "强制包安装器白名单（任意来源可装）", "安全中心"},
+            {FORCE_VIRUS_WHITELIST, "强制病毒扫描白名单", "安全中心"},
     };
 
     private static final Map<String, String> TITLES = new HashMap<>();
@@ -251,7 +264,7 @@ public final class FeatureKeys {
 
     /** 分组顺序与每组开关 key 列表（UI 用） */
     public static final String[] GROUP_ORDER = {
-            "桌面", "核心破解", "截屏", "系统", "系统服务", "分屏与小窗", "智慧侧边栏", "小布扫一扫", "主题商店"};
+            "桌面", "核心破解", "截屏", "系统", "系统服务", "分屏与小窗", "智慧侧边栏", "安全中心", "小布扫一扫", "主题商店"};
 
     public static String[] groupSwitches(String group) {
         int n = 0;
