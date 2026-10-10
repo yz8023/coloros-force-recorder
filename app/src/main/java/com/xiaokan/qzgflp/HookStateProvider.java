@@ -47,10 +47,10 @@ public class HookStateProvider extends ContentProvider {
                     b.putBoolean("b_" + s[0], p.getBoolean(s[0],
                             (Boolean) FeatureKeys.defaultValue(s[0])));
                 }
-                b.putInt("i_" + FeatureKeys.LAYOUT_ROWS, p.getInt(FeatureKeys.LAYOUT_ROWS,
-                        (Integer) FeatureKeys.defaultValue(FeatureKeys.LAYOUT_ROWS)));
-                b.putInt("i_" + FeatureKeys.LAYOUT_COLS, p.getInt(FeatureKeys.LAYOUT_COLS,
-                        (Integer) FeatureKeys.defaultValue(FeatureKeys.LAYOUT_COLS)));
+                for (String ik : FeatureKeys.INT_KEYS) {
+                    b.putInt("i_" + ik, p.getInt(ik,
+                            (Integer) FeatureKeys.defaultValue(ik)));
+                }
                 for (String sk : FeatureKeys.STRING_KEYS) {
                     b.putString("s_" + sk,
                             p.getString(sk, (String) FeatureKeys.defaultValue(sk)));

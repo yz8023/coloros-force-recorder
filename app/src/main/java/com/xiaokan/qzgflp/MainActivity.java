@@ -31,15 +31,26 @@ import android.widget.Toast;
  */
 public class MainActivity extends Activity {
 
-    private static final String[] TABS = {"状态", "桌面", "安装", "系统"};
+    private static final String[] TABS = {"状态", "功能", "工具"};
     private static final int[] TAB_ICONS = {
-            R.drawable.ic_tab_status, R.drawable.ic_tab_desktop,
-            R.drawable.ic_tab_core, R.drawable.ic_tab_system};
+            R.drawable.ic_tab_status, R.drawable.ic_tab_core, R.drawable.ic_tab_system};
+
+    private static final int[] GROUP_COLORS = {
+            0xFF34C3FF, 0xFF7C5CFF, 0xFF00B8A9, 0xFF3D8BFF, 0xFFFF5C7A,
+            0xFF3D8BFF, 0xFF9F6CFF, 0xFFFF9F43, 0xFF8E9BFF, 0xFFFF9F43};
+    private static final int[] GROUP_ICONS = {
+            R.drawable.ic_sec_folder, R.drawable.ic_sec_shield, R.drawable.ic_sec_screenshot,
+            R.drawable.ic_sec_sliders, R.drawable.ic_sec_install, R.drawable.ic_sec_layout,
+            R.drawable.ic_sec_master, R.drawable.ic_sec_lock, R.drawable.ic_sec_eye,
+            R.drawable.ic_sec_badge};
+    private static final String[] GROUP_DESCS = {
+            "文件夹 · 布局 · 角标", "安装校验与签名绕过", "隐私页与延迟限制",
+            "受限设置与护眼", "PMS 行为与选择器接管", "多窗口限制解除",
+            "侧边栏能力扩展", "SafeProvider 状态伪装", "全屏翻译", "VIP 与广告清理"};
 
     private static final int C_LAYOUT = 0xFF3D8BFF;
     private static final int C_FOLDER = 0xFF34C3FF;
     private static final int C_BADGE = 0xFF9F6CFF;
-    private static final int C_LIMIT = 0xFF7C5CFF;
     private static final int C_INSTALLER = 0xFFFF5C7A;
     private static final int C_APPS = 0xFFFF9F43;
     private static final int C_SHOT = 0xFF00B8A9;
@@ -251,9 +262,8 @@ public class MainActivity extends Activity {
     private void swapPage(int idx, boolean animate) {
         View page;
         if (idx == 0) page = pageStatus();
-        else if (idx == 1) page = pageDesktop();
-        else if (idx == 2) page = pageInstall();
-        else page = pageSystem();
+        else if (idx == 1) page = pageFeatures();
+        else page = pageTools();
         pageHost.removeAllViews();
         pageCol = new LinearLayout(this);
         pageCol.setOrientation(LinearLayout.VERTICAL);
@@ -368,97 +378,63 @@ public class MainActivity extends Activity {
         return card;
     }
 
-    private View pageDesktop() {
+    private View pageFeatures() {
         LinearLayout col = col();
-
-        LinearLayout card = card();
-        card.addView(sectionHead(C_FOLDER, R.drawable.ic_sec_folder,
-                "文件夹与布局", "预览背景与行列数破解"));
-        java.util.List<View> rows = new java.util.ArrayList<>();
-        rows.add(toggleRow(C_FOLDER, "移除文件夹预览背景",
-                "文件夹展开页不再绘制半透明底图", FeatureKeys.FOLDER_BG));
-        rows.add(toggleRow(C_LAYOUT, "桌面布局行列数自定义",
-                "支持 4-7 列 / 6-10 行组合（重启生效）", FeatureKeys.LAYOUT_CUSTOM));
-        if (readBool(FeatureKeys.LAYOUT_CUSTOM)) {
-            rows.add(stepperRow("行数", FeatureKeys.LAYOUT_ROWS, 6, 10, C_LAYOUT));
-            rows.add(stepperRow("列数", FeatureKeys.LAYOUT_COLS, 4, 7, C_LAYOUT));
+        String[] groups = FeatureKeys.GROUP_ORDER;
+        for (int g = 0; g < groups.length; g++) {
+            LinearLayout card = card();
+            int color = GROUP_COLORS[g % GROUP_COLORS.length];
+            card.addView(sectionHead(color, GROUP_ICONS[g % GROUP_ICONS.length],
+                    groups[g], GROUP_DESCS[g % GROUP_DESCS.length]));
+            String[] keys = FeatureKeys.groupSwitches(groups[g]);
+            java.util.List<View> rows = new java.util.ArrayList<>();
+            for (String key : keys) {
+                rows.add(autoToggleRow(color, key));
+                if (FeatureKeys.LAYOUT_CUSTOM.equals(key) && readBool(key)) {
+                    rows.add(stepperRow("行数", FeatureKeys.LAYOUT_ROWS, 6, 10, C_LAYOUT));
+                    rows.add(stepperRow("列数", FeatureKeys.LAYOUT_COLS, 4, 7, C_LAYOUT));
+                }
+            }
+            addRows(card, rows.toArray(new View[0]));
+            col.addView(card, match(0, 0, 0, g == groups.length - 1 ? 8 : 14));
         }
-        addRows(card, rows.toArray(new View[0]));
-        col.addView(card, match(0, 0, 0, 14));
-
-        LinearLayout badges = card();
-        badges.addView(sectionHead(C_BADGE, R.drawable.ic_sec_badge,
-                "角标管理", "清理桌面角标与徽标"));
-        addRows(badges,
-                toggleRow(C_BADGE, "移除快捷方式徽标", "不再显示快捷方式小红标", FeatureKeys.BADGE_SHORTCUT),
-                toggleRow(C_BADGE, "移除工作空间徽标", "不再显示工作资料标识", FeatureKeys.BADGE_WORK),
-                toggleRow(C_BADGE, "移除应用分身徽标", "不再显示应用分身标识", FeatureKeys.BADGE_CLONE));
-        col.addView(badges, match(0, 0, 0, 8));
         return col;
     }
 
-    private View pageInstall() {
+    private View pageTools() {
         LinearLayout col = col();
 
-        LinearLayout limit = card();
-        limit.addView(sectionHead(C_LIMIT, R.drawable.ic_sec_shield,
-                "安装限制破解", "绕过系统安装校验（重启生效）"));
-        addRows(limit,
-                toggleRow(C_LIMIT, "强制启用 32 位支持",
-                        "允许安装仅含 32 位 so 的应用（重启生效）", FeatureKeys.ENABLE_32BIT),
-                toggleRow(C_LIMIT, "移除 ADB 安装确认",
-                        "adb install 跳过二次确认弹窗", FeatureKeys.REMOVE_ADB_CONFIRM),
-                toggleRow(C_LIMIT, "允许降级安装",
-                        "高版本覆盖安装回低版本（重启生效）", FeatureKeys.ALLOW_DOWNGRADE),
-                toggleRow(C_LIMIT, "跳过签名 / 病毒验证",
-                        "安装时跳过签名比对与验证（重启生效）", FeatureKeys.DISABLE_VERIFY));
-        col.addView(limit, match(0, 0, 0, 14));
+        LinearLayout params = card();
+        params.addView(sectionHead(C_APPS, R.drawable.ic_sec_sliders,
+                "参数设置", "整型与文本参数（-1 表示跟随系统默认）"));
+        java.util.List<View> rows = new java.util.ArrayList<>();
+        for (String key : FeatureKeys.INT_KEYS) {
+            if (FeatureKeys.LAYOUT_ROWS.equals(key) || FeatureKeys.LAYOUT_COLS.equals(key)) {
+                continue;
+            }
+            int min = FeatureKeys.MAX_SMALL_WINDOWS.equals(key) ? -1
+                    : FeatureKeys.SMALL_WIN_CORNER_RADIUS.equals(key) ? -1
+                    : FeatureKeys.SMALL_WIN_FOCUSED_SHADOW.equals(key) ? -1
+                    : FeatureKeys.SMALL_WIN_UNFOCUSED_SHADOW.equals(key) ? -1 : 0;
+            int max = FeatureKeys.MAX_SMALL_WINDOWS.equals(key) ? 9
+                    : FeatureKeys.SMALL_WIN_CORNER_RADIUS.equals(key) ? 60
+                    : FeatureKeys.SMALL_WIN_FOCUSED_SHADOW.equals(key) ? 30
+                    : FeatureKeys.SMALL_WIN_UNFOCUSED_SHADOW.equals(key) ? 30 : 10;
+            rows.add(stepperRow(PARAM_LABELS.get(key), key, min, max, C_APPS));
+        }
+        for (String key : FeatureKeys.STRING_KEYS) {
+            rows.add(textRow(PARAM_LABELS.get(key), key));
+        }
+        addRows(params, rows.toArray(new View[0]));
+        col.addView(params, match(0, 0, 0, 14));
 
-        LinearLayout installer = card();
-        installer.addView(sectionHead(C_INSTALLER, R.drawable.ic_sec_install,
-                "安装器增强", "自动化操作与界面清理"));
-        addRows(installer,
-                toggleRow(C_INSTALLER, "修复安装按钮显示异常", "按钮异常置灰时可修复", FeatureKeys.FIX_INSTALL_BUTTON),
-                toggleRow(C_INSTALLER, "跳过 APK 安全扫描", "安装前不再执行病毒扫描", FeatureKeys.SKIP_APK_SCAN),
-                toggleRow(C_INSTALLER, "拦截应用详情跳转", "禁止安装页启动 AppDetail 定制扫描", FeatureKeys.DISABLE_APPDETAIL),
-                toggleRow(C_INSTALLER, "自动点击安装按钮", "确认页与完成页自动点击", FeatureKeys.AUTO_INSTALL),
-                toggleRow(C_INSTALLER, "自动点击卸载按钮", "卸载确认自动完成", FeatureKeys.AUTO_UNINSTALL),
-                toggleRow(C_INSTALLER, "移除安装完成广告", "隐藏完成页推荐位", FeatureKeys.REMOVE_INSTALL_ADS),
-                toggleRow(C_INSTALLER, "安装页显示包信息", "顶部展示包名与版本", FeatureKeys.SHOW_APK_INFO));
-        col.addView(installer, match(0, 0, 0, 14));
-
-        LinearLayout apps = card();
-        apps.addView(sectionHead(C_APPS, R.drawable.ic_sec_lock,
-                "应用管理", "系统应用控制"));
-        addRows(apps,
-                toggleRow(C_APPS, "允许卸载 / 停用系统应用", "设置中的应用详情解除限制", FeatureKeys.ALLOW_DISABLE_SYSAPPS));
-        col.addView(apps, match(0, 0, 0, 8));
-        return col;
-    }
-
-    private View pageSystem() {
-        LinearLayout col = col();
-
-        LinearLayout shot = card();
-        shot.addView(sectionHead(C_SHOT, R.drawable.ic_sec_screenshot,
-                "截屏解锁", "隐私页面与延迟限制"));
-        addRows(shot,
-                toggleRow(C_SHOT, "解除隐私页截屏限制", "长截图包含 FLAG_SECURE 隐私页", FeatureKeys.SCREENSHOT_PRIVACY),
-                toggleRow(C_SHOT, "移除截屏长按延迟", "电源+音量下立即截屏", FeatureKeys.SCREENSHOT_NO_DELAY));
-        col.addView(shot, match(0, 0, 0, 14));
-
-        LinearLayout perm = card();
-        perm.addView(sectionHead(C_PERM, R.drawable.ic_sec_eye,
-                "权限与护眼", "受限设置与护眼特性"));
-        addRows(perm,
-                toggleRow(C_PERM, "自动解锁受限制的设置", "权限管理页自动解除受限应用", FeatureKeys.UNLOCK_RESTRICTED),
-                toggleRow(C_PERM, "护眼纸质纹理支持", "护眼模式纸纹特性强制可用（重启生效）", FeatureKeys.EYE_TEXTURE));
-        col.addView(perm, match(0, 0, 0, 14));
-
-        LinearLayout quick = card();
-        quick.addView(sectionHead(ACCENT, R.drawable.ic_sec_sliders,
-                "快捷入口", "直达常用设置页"));
-        addRows(quick,
+        LinearLayout about = card();
+        about.addView(sectionHead(C_PERM, R.drawable.ic_sec_master,
+                "关于模块", "运行信息与快捷入口"));
+        addRows(about,
+                staticRow("当前版本", "v" + versionName()
+                        + " · 已启用 " + enabledCount() + " / " + FeatureKeys.SWITCHES.length + " 项功能"),
+                staticRow("配置通道", "HookStateProvider 实时下发，改动约 2 秒内生效"),
                 linkRow("打开开发者选项", () -> startActivity(
                         new Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))),
                 linkRow("打开 LSPosed 管理器", () -> {
@@ -466,8 +442,20 @@ public class MainActivity extends Activity {
                     if (it != null) startActivity(it);
                     else Toast.makeText(this, "未检测到 LSPosed", Toast.LENGTH_SHORT).show();
                 }));
-        col.addView(quick, match(0, 0, 0, 8));
+        col.addView(about, match(0, 0, 0, 8));
         return col;
+    }
+
+    private static final java.util.Map<String, String> PARAM_LABELS = new java.util.HashMap<>();
+    static {
+        PARAM_LABELS.put(FeatureKeys.MAX_SMALL_WINDOWS, "小窗同时个数上限");
+        PARAM_LABELS.put(FeatureKeys.SMALL_WIN_CORNER_RADIUS, "小窗圆角半径（px）");
+        PARAM_LABELS.put(FeatureKeys.SMALL_WIN_FOCUSED_SHADOW, "小窗聚焦阴影");
+        PARAM_LABELS.put(FeatureKeys.SMALL_WIN_UNFOCUSED_SHADOW, "小窗失焦阴影");
+        PARAM_LABELS.put(FeatureKeys.TILE_SCRIPT, "快捷磁贴脚本命令");
+        PARAM_LABELS.put(FeatureKeys.CUSTOM_FILE_MANAGER_PKG, "自定义文件管理器包名");
+        PARAM_LABELS.put(FeatureKeys.INSTALLER_TARGET_PACKAGES, "安装重定向目标包名（逗号分隔）");
+        PARAM_LABELS.put(FeatureKeys.UNINSTALLER_TARGET_PACKAGES, "卸载重定向目标包名（逗号分隔）");
     }
 
     // ── 行构建（只返回视图，由调用方添加）──
@@ -507,7 +495,7 @@ public class MainActivity extends Activity {
         return head;
     }
 
-    private View toggleRow(int color, String title, String sub, final String key) {
+    private View autoToggleRow(int color, final String key) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -518,17 +506,10 @@ public class MainActivity extends Activity {
         LinearLayout textCol = new LinearLayout(this);
         textCol.setOrientation(LinearLayout.VERTICAL);
         TextView t = new TextView(this);
-        t.setText(title);
+        t.setText(FeatureKeys.title(key));
         t.setTextSize(14);
         t.setTextColor(INK);
         textCol.addView(t, wrap());
-        if (sub != null && !sub.isEmpty()) {
-            TextView s = new TextView(this);
-            s.setText(sub);
-            s.setTextSize(10);
-            s.setTextColor(SUB);
-            textCol.addView(s, wrap(0, dp(2), 0, 0));
-        }
         row.addView(textCol, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -561,7 +542,7 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         final TextView val = new TextView(this);
-        val.setText(String.valueOf(cfg.getInt("i_" + key,
+        val.setText(intLabel(cfg.getInt(key,
                 (Integer) FeatureKeys.defaultValue(key))));
         val.setTextSize(14);
         val.setTypeface(Typeface.DEFAULT_BOLD);
@@ -570,22 +551,72 @@ public class MainActivity extends Activity {
         val.setGravity(Gravity.CENTER);
 
         row.addView(stepBtn("−", color, () -> {
-            int v = cfg.getInt("i_" + key, (Integer) FeatureKeys.defaultValue(key));
+            int v = cfg.getInt(key, (Integer) FeatureKeys.defaultValue(key));
             if (v > min) {
-                cfg.edit().putInt("i_" + key, v - 1).apply();
-                val.setText(String.valueOf(v - 1));
+                cfg.edit().putInt(key, v - 1).apply();
+                val.setText(intLabel(v - 1));
             }
         }), new LinearLayout.LayoutParams(dp(34), dp(34)));
         LinearLayout.LayoutParams vp = wrap();
         vp.setMargins(dp(10), 0, dp(10), 0);
         row.addView(val, vp);
         row.addView(stepBtn("+", color, () -> {
-            int v = cfg.getInt("i_" + key, (Integer) FeatureKeys.defaultValue(key));
+            int v = cfg.getInt(key, (Integer) FeatureKeys.defaultValue(key));
             if (v < max) {
-                cfg.edit().putInt("i_" + key, v + 1).apply();
-                val.setText(String.valueOf(v + 1));
+                cfg.edit().putInt(key, v + 1).apply();
+                val.setText(intLabel(v + 1));
             }
         }), new LinearLayout.LayoutParams(dp(34), dp(34)));
+        return row;
+    }
+
+    private String intLabel(int v) {
+        return v < 0 ? "默认" : String.valueOf(v);
+    }
+
+    private View textRow(String label, final String key) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(50));
+        row.setPadding(dp(12), dp(6), dp(12), dp(6));
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(12));
+        g.setColor(FIELD_BG);
+        row.setBackground(g);
+
+        TextView t = new TextView(this);
+        t.setText(label);
+        t.setTextSize(12);
+        t.setTextColor(INK);
+        row.addView(t, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        String cur = cfg.getString(key, (String) FeatureKeys.defaultValue(key));
+        TextView state = new TextView(this);
+        boolean has = cur != null && !cur.isEmpty();
+        state.setText(has ? "已设置" : "未设置");
+        state.setTextSize(11);
+        state.setTypeface(Typeface.DEFAULT_BOLD);
+        state.setTextColor(has ? C_APPS : SUB);
+        row.addView(state, wrap());
+
+        row.setOnClickListener(v -> {
+            final android.widget.EditText input = new android.widget.EditText(this);
+            input.setText(cur);
+            input.setSelection(input.getText() == null ? 0 : input.getText().length());
+            input.setSingleLine(FeatureKeys.TILE_SCRIPT.equals(key));
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle(label)
+                    .setView(input)
+                    .setPositiveButton("保存", (d, w) -> {
+                        String s = input.getText() == null ? "" : input.getText().toString().trim();
+                        cfg.edit().putString(key, s).apply();
+                        state.setText(s.isEmpty() ? "未设置" : "已设置");
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        });
         return row;
     }
 
